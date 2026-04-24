@@ -1,0 +1,1064 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1.0" />
+<title>Claw Safety</title>
+<link rel="preconnect" href="https://fonts.googleapis.com" />
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+<link href="https://fonts.googleapis.com/css2?family=IBM+Plex+Mono:wght@400;500&family=IBM+Plex+Sans:wght@300;400;500;600&display=swap" rel="stylesheet" />
+<script src="https://unpkg.com/react@18.3.1/umd/react.development.js" integrity="sha384-hD6/rw4ppMLGNu3tX5cjIb+uRZ7UkRJ6BPkLpg4hAu/6onKUg4lLsHAs9EBPT82L" crossorigin="anonymous"></script>
+<script src="https://unpkg.com/react-dom@18.3.1/umd/react-dom.development.js" integrity="sha384-u6aeetuaXnQ38mYT8rp6sbXaQe3NL9t+IBXmnYxwkUI2Hw4bsp2Wvmx4yRQF1uAm" crossorigin="anonymous"></script>
+<script src="https://unpkg.com/@babel/standalone@7.29.0/babel.min.js" integrity="sha384-m08KidiNqLdpJqLq95G/LEi8Qvjl/xUYll3QILypMoQ65QorJ9Lvtp2RXYGBFj1y" crossorigin="anonymous"></script>
+<script type="text/babel">
+/* ─── TWEAKS PANEL ─── */
+function useTweaks(defaults) {
+  const [tweaks, setTweaks] = React.useState(() => {
+    try {
+      const stored = localStorage.getItem('claw-safety-tweaks');
+      return stored ? { ...defaults, ...JSON.parse(stored) } : { ...defaults };
+    } catch { return { ...defaults }; }
+  });
+  const [panelVisible, setPanelVisible] = React.useState(false);
+
+  const setTweak = React.useCallback((key, value) => {
+    setTweaks(prev => {
+      const next = { ...prev, [key]: value };
+      try { localStorage.setItem('claw-safety-tweaks', JSON.stringify(next)); } catch {}
+      return next;
+    });
+  }, []);
+
+  React.useEffect(() => {
+    const handler = (e) => {
+      if ((e.metaKey || e.ctrlKey) && e.key === ',') {
+        e.preventDefault();
+        setPanelVisible(v => !v);
+      }
+    };
+    window.addEventListener('keydown', handler);
+    return () => window.removeEventListener('keydown', handler);
+  }, []);
+
+  return { tweaks, setTweak, panelVisible, setPanelVisible };
+}
+
+function TweaksPanel({ children, onClose }) {
+  return (
+    <div style={{
+      position:'fixed', right:0, top:0, bottom:0, width:280,
+      background:'var(--surface)', borderLeft:'0.5px solid var(--border-strong)',
+      display:'flex', flexDirection:'column', zIndex:200, boxShadow:'-4px 0 24px rgba(0,0,0,0.1)',
+    }}>
+      <div style={{
+        padding:'12px 16px', borderBottom:'0.5px solid var(--border)',
+        display:'flex', alignItems:'center', justifyContent:'space-between',
+      }}>
+        <span style={{fontSize:13, fontWeight:600, color:'var(--text-primary)'}}>Tweaks</span>
+        <button onClick={onClose} style={{
+          border:'none', background:'none', cursor:'pointer',
+          color:'var(--text-tertiary)', fontSize:18, lineHeight:1, padding:0,
+        }}>×</button>
+      </div>
+      <div style={{flex:1, overflow:'auto', padding:'12px 16px'}}>
+        {children}
+      </div>
+      <div style={{padding:'8px 16px', borderTop:'0.5px solid var(--border)'}}>
+        <span style={{fontSize:10, color:'var(--text-tertiary)'}}>⌘, to toggle</span>
+      </div>
+    </div>
+  );
+}
+
+function TweakSection({ title, children }) {
+  return (
+    <div style={{marginBottom:20}}>
+      <div style={{fontSize:10, fontWeight:600, letterSpacing:'0.08em', textTransform:'uppercase',
+        color:'var(--text-tertiary)', marginBottom:10}}>{title}</div>
+      <div style={{display:'flex', flexDirection:'column', gap:10}}>{children}</div>
+    </div>
+  );
+}
+
+function TweakRow({ label, children }) {
+  return (
+    <div style={{display:'flex', alignItems:'center', justifyContent:'space-between', gap:8}}>
+      <span style={{fontSize:12, color:'var(--text-secondary)', flex:1}}>{label}</span>
+      {children}
+    </div>
+  );
+}
+
+function TweakColor({ label, value, onChange }) {
+  return (
+    <TweakRow label={label}>
+      <input type="color" value={value} onChange={e => onChange(e.target.value)}
+        style={{width:28, height:22, border:'0.5px solid var(--border-strong)', borderRadius:4,
+          cursor:'pointer', padding:1, background:'var(--bg-secondary)'}} />
+    </TweakRow>
+  );
+}
+
+function TweakToggle({ label, value, onChange }) {
+  return (
+    <TweakRow label={label}>
+      <button onClick={() => onChange(!value)} style={{
+        width:34, height:20, borderRadius:10, border:'0.5px solid var(--border-strong)',
+        background: value ? 'var(--teal)' : 'var(--bg-tertiary)',
+        cursor:'pointer', position:'relative', transition:'background 0.2s', padding:0,
+      }}>
+        <span style={{
+          position:'absolute', top:2, left: value ? 16 : 2,
+          width:14, height:14, borderRadius:'50%', background:'var(--surface)',
+          transition:'left 0.2s', display:'block',
+        }} />
+      </button>
+    </TweakRow>
+  );
+}
+
+function TweakSlider({ label, value, min, max, step, onChange }) {
+  return (
+    <div style={{display:'flex', flexDirection:'column', gap:4}}>
+      <div style={{display:'flex', justifyContent:'space-between'}}>
+        <span style={{fontSize:12, color:'var(--text-secondary)'}}>{label}</span>
+        <span style={{fontSize:11, color:'var(--text-tertiary)', fontFamily:'var(--font-mono)'}}>{value}px</span>
+      </div>
+      <input type="range" min={min} max={max} step={step} value={value}
+        onChange={e => onChange(Number(e.target.value))}
+        style={{width:'100%', accentColor:'var(--teal)'}} />
+    </div>
+  );
+}
+</script>
+<style>
+  *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
+
+  :root {
+    --teal: #1D9E75;
+    --teal-10: rgba(29,158,117,0.10);
+    --teal-20: rgba(29,158,117,0.20);
+    --red: #E24B4A;
+    --red-10: rgba(226,75,74,0.10);
+    --amber: #EF9F27;
+    --amber-10: rgba(239,159,39,0.10);
+    --purple: #7F77DD;
+    --purple-10: rgba(127,119,221,0.10);
+
+    --bg: #FAFAFA;
+    --bg-secondary: #F3F3F3;
+    --bg-tertiary: #EBEBEB;
+    --surface: #FFFFFF;
+    --border: rgba(0,0,0,0.10);
+    --border-strong: rgba(0,0,0,0.16);
+    --text-primary: #111111;
+    --text-secondary: #555555;
+    --text-tertiary: #888888;
+    --text-inverse: #FFFFFF;
+
+    --nav-height: 48px;
+    --sidebar-width: 220px;
+    --font-ui: 'IBM Plex Sans', sans-serif;
+    --font-mono: 'IBM Plex Mono', monospace;
+    --radius-sm: 8px;
+    --radius-md: 12px;
+  }
+
+  [data-theme="dark"] {
+    --bg: #111214;
+    --bg-secondary: #1A1C1F;
+    --bg-tertiary: #222428;
+    --surface: #1A1C1F;
+    --border: rgba(255,255,255,0.09);
+    --border-strong: rgba(255,255,255,0.16);
+    --text-primary: #F0F0F0;
+    --text-secondary: #A0A0A0;
+    --text-tertiary: #666666;
+    --text-inverse: #111111;
+  }
+
+  html, body, #root {
+    height: 100%;
+    font-family: var(--font-ui);
+    background: var(--bg);
+    color: var(--text-primary);
+    font-size: 13px;
+    -webkit-font-smoothing: antialiased;
+  }
+
+  /* Scrollbar */
+  ::-webkit-scrollbar { width: 4px; height: 4px; }
+  ::-webkit-scrollbar-track { background: transparent; }
+  ::-webkit-scrollbar-thumb { background: var(--border-strong); border-radius: 2px; }
+</style>
+</head>
+<body>
+<div id="root"></div>
+<script type="text/babel">
+const { useState, useEffect, useRef, useCallback } = React;
+
+/* ─── DATA CONVERSION ─── */
+
+function entryAction(entry) {
+  const name = entry.name || '';
+  const attrs = entry.attributes || {};
+  if (name === 'shield.injection_detected') return 'injection';
+  if (name === 'shield.permission_denied')  return 'blocked';
+  if (name === 'shield.approval_required')  return 'approval';
+  if (attrs['injection.action'] === 'blocked') return 'blocked';
+  if (attrs['injection.clean'] === 'false')    return 'injection';
+  if (entry.status?.code === 'ERROR')          return 'warned';
+  return 'clean';
+}
+
+function entryToEvent(entry, index) {
+  const attrs = entry.attributes || {};
+  const name  = entry.name || '';
+  const tool  = attrs['tool.name'] || (name.startsWith('tool.') ? name.slice(5) : name) || 'unknown';
+  const agent = attrs['agent.id'] || 'unknown';
+  const d     = new Date(entry.startTime);
+  const time  = isNaN(d) ? '' : d.toLocaleTimeString('en-US', { hour12:false, hour:'2-digit', minute:'2-digit', second:'2-digit' });
+
+  let detail = '';
+  if (attrs['shield.details']) {
+    try {
+      const sd = JSON.parse(attrs['shield.details']);
+      const hits = sd.hits;
+      if (hits && hits.length) detail = 'Hits: ' + hits.map(h => h.id).join(', ');
+      else detail = sd.reason || sd.title || sd.description || '';
+    } catch { detail = attrs['shield.details']; }
+  } else if (attrs['tool.error']) {
+    detail = attrs['tool.error'];
+  } else if (attrs['tool.params']) {
+    try {
+      const p = JSON.parse(attrs['tool.params']);
+      const first = Object.values(p)[0];
+      detail = typeof first === 'string' ? first : JSON.stringify(p);
+    } catch { detail = attrs['tool.params']; }
+  }
+
+  return { id: index, time, tool, action: entryAction(entry), agent, detail };
+}
+
+function configToAgents(config, events) {
+  if (!config || !config.agents) return [];
+  return Object.entries(config.agents).map(([id, ag]) => {
+    const mode = ag.injection_mode || 'warn';
+    const dot  = mode === 'warn' ? 'amber' : 'green';
+    const agentEvents = events.filter(e => e.agent === id);
+    return {
+      id,
+      name: id,
+      mode,
+      dot,
+      calls:      agentEvents.length,
+      blocked:    agentEvents.filter(e => e.action === 'blocked').length,
+      injections: agentEvents.filter(e => e.action === 'injection').length,
+      clean:      agentEvents.filter(e => e.action === 'clean').length,
+    };
+  });
+}
+
+function configToPolicies(config) {
+  if (!config || !config.agents) return {};
+  const result = {};
+  for (const [id, ag] of Object.entries(config.agents)) {
+    const paths = {};
+    for (const [tool, constraints] of Object.entries(ag.path_constraints || {})) {
+      paths[tool] = {
+        allowed: constraints.allowed_paths || [],
+        blocked: constraints.blocked_paths || [],
+      };
+    }
+    result[id] = {
+      name:  id,
+      mode:  ag.injection_mode || 'warn',
+      tools: ag.allowed_tools || [],
+      paths,
+    };
+  }
+  return result;
+}
+
+function buildHourBuckets(events, key) {
+  const now = new Date();
+  const buckets = new Array(24).fill(0);
+  events.forEach(ev => {
+    if (!ev._startTime) return;
+    const diffMs  = now - ev._startTime;
+    const diffHrs = diffMs / 3600000;
+    if (diffHrs < 0 || diffHrs >= 24) return;
+    const bucket = 23 - Math.floor(diffHrs);
+    if (key === 'all') buckets[bucket]++;
+    else if (key === 'security' && (ev.action === 'blocked' || ev.action === 'injection')) buckets[bucket]++;
+  });
+  return buckets;
+}
+
+/* ─── HELPERS ─── */
+const ACTION_CONFIG = {
+  blocked:   { label:'BLOCKED',   bg:'var(--red-10)',    color:'var(--red)',    border:'var(--red)' },
+  injection: { label:'INJECTION', bg:'var(--red-10)',    color:'var(--red)',    border:'var(--red)' },
+  clean:     { label:'CLEAN',     bg:'var(--teal-10)',   color:'var(--teal)',   border:'var(--teal)' },
+  warned:    { label:'WARNED',    bg:'var(--amber-10)',  color:'var(--amber)',  border:'var(--amber)' },
+  approval:  { label:'APPROVAL PENDING', bg:'var(--purple-10)', color:'var(--purple)', border:'var(--purple)' },
+};
+
+const MODE_CONFIG = {
+  warn:     { label:'WARN',     color:'var(--amber)', bg:'var(--amber-10)' },
+  sanitize: { label:'SANITIZE', color:'var(--purple)', bg:'var(--purple-10)' },
+  block:    { label:'BLOCK',    color:'var(--red)',   bg:'var(--red-10)' },
+};
+
+function Badge({ type, small }) {
+  const cfg = ACTION_CONFIG[type] || {};
+  return (
+    <span style={{
+      display:'inline-flex', alignItems:'center',
+      padding: small ? '1px 6px' : '2px 8px',
+      borderRadius: 4,
+      fontSize: small ? 9 : 10,
+      fontWeight: 600,
+      letterSpacing: '0.06em',
+      fontFamily:'var(--font-mono)',
+      background: cfg.bg,
+      color: cfg.color,
+      border: `0.5px solid ${cfg.border}`,
+    }}>{cfg.label}</span>
+  );
+}
+
+function ModeBadge({ mode, small }) {
+  const cfg = MODE_CONFIG[mode] || {};
+  return (
+    <span style={{
+      display:'inline-flex', alignItems:'center',
+      padding: small ? '1px 6px' : '2px 8px',
+      borderRadius: 4,
+      fontSize: small ? 9 : 10,
+      fontWeight: 600,
+      letterSpacing: '0.06em',
+      fontFamily:'var(--font-mono)',
+      background: cfg.bg,
+      color: cfg.color,
+      border: `0.5px solid ${cfg.border}`,
+    }}>{cfg.label}</span>
+  );
+}
+
+function Dot({ color }) {
+  const c = color === 'green' ? 'var(--teal)' : color === 'amber' ? 'var(--amber)' : color === 'red' ? 'var(--red)' : 'var(--border-strong)';
+  return <span style={{width:7, height:7, borderRadius:'50%', background:c, display:'inline-block', flexShrink:0}} />;
+}
+
+function MiniBar({ data, color, height=56 }) {
+  const max = Math.max(...data);
+  const w = 100 / data.length;
+  return (
+    <svg width="100%" height={height} viewBox={`0 0 ${data.length*10} ${height}`} preserveAspectRatio="none">
+      {data.map((v,i) => {
+        const barH = max > 0 ? (v/max)*height*0.88 : 0;
+        return <rect key={i} x={i*10+1} y={height-barH} width={8} height={barH} rx={1.5}
+          fill={color} opacity={i === data.length-1 ? 1 : 0.55} />;
+      })}
+    </svg>
+  );
+}
+
+/* ─── NAV ─── */
+function TopNav({ page, setPage, dark, setDark }) {
+  return (
+    <nav style={{
+      height:'var(--nav-height)', background:'var(--surface)',
+      borderBottom:'0.5px solid var(--border-strong)',
+      display:'flex', alignItems:'center', padding:'0 16px',
+      gap:0, position:'sticky', top:0, zIndex:100, flexShrink:0,
+    }}>
+      {/* Logo */}
+      <div style={{display:'flex',alignItems:'center',gap:8,marginRight:28}}>
+        <svg width="22" height="22" viewBox="0 0 22 22" fill="none">
+          <rect width="22" height="22" rx="5" fill="var(--teal)"/>
+          <path d="M6 11 L10 7 L10 10 L16 10 L16 12 L10 12 L10 15 Z" fill="white" opacity="0.9"/>
+          <circle cx="15.5" cy="7.5" r="2.5" fill="white" opacity="0.7"/>
+        </svg>
+        <span style={{fontWeight:600, fontSize:14, letterSpacing:'-0.01em', color:'var(--text-primary)'}}>claw-safety</span>
+      </div>
+
+      {/* Tabs */}
+      {['Dashboard','Policies'].map(tab => {
+        const active = (tab === 'Dashboard' && page === 'dashboard') || (tab === 'Policies' && page === 'policies');
+        return (
+          <button key={tab} onClick={() => { if(tab==='Dashboard') setPage('dashboard'); if(tab==='Policies') setPage('policies'); }}
+            style={{
+              height:'100%', padding:'0 14px', border:'none', cursor:'pointer',
+              background:'transparent',
+              color: active ? 'var(--teal)' : 'var(--text-secondary)',
+              fontFamily:'var(--font-ui)', fontSize:13, fontWeight: active ? 600 : 400,
+              borderBottom: active ? '2px solid var(--teal)' : '2px solid transparent',
+              marginBottom: active ? '-0.5px' : 0,
+              transition:'color 0.15s',
+            }}>{tab}</button>
+        );
+      })}
+
+      <div style={{flex:1}} />
+
+      {/* Live status */}
+      <div style={{display:'flex',alignItems:'center',gap:5,marginRight:16}}>
+        <span style={{width:6,height:6,borderRadius:'50%',background:'var(--teal)',display:'inline-block',
+          boxShadow:'0 0 0 2px var(--teal-20)',animation:'pulse 2s infinite'}} />
+        <span style={{fontSize:11,color:'var(--text-secondary)',fontFamily:'var(--font-mono)'}}>LIVE</span>
+      </div>
+
+      {/* Dark toggle */}
+      <button onClick={() => setDark(!dark)} style={{
+        width:34, height:20, borderRadius:10, border:'0.5px solid var(--border-strong)',
+        background: dark ? 'var(--teal)' : 'var(--bg-tertiary)',
+        cursor:'pointer', position:'relative', transition:'background 0.2s', flexShrink:0,
+        padding:0,
+      }}>
+        <span style={{
+          position:'absolute', top:2, left: dark ? 16 : 2,
+          width:14, height:14, borderRadius:'50%', background:'var(--surface)',
+          transition:'left 0.2s', display:'flex', alignItems:'center', justifyContent:'center',
+          fontSize:8,
+        }}>{dark ? '🌙' : '☀️'}</span>
+      </button>
+    </nav>
+  );
+}
+
+/* ─── DASHBOARD ─── */
+function Dashboard({ filter, setFilter, selectedAgent, setSelectedAgent, tweaks = {}, agentsData = [], eventsData = [] }) {
+  const compact = tweaks.compactMode;
+  const stripe  = tweaks.tableRowStripe !== false;
+  const showDetail = tweaks.showEventDetail !== false;
+  const allCalls   = agentsData.reduce((s,a)=>s+a.calls,0);
+  const allBlocked = agentsData.reduce((s,a)=>s+a.blocked,0);
+  const allInject  = agentsData.reduce((s,a)=>s+a.injections,0);
+  const allClean   = agentsData.reduce((s,a)=>s+a.clean,0);
+
+  const filteredEvents = eventsData.filter(e => {
+    const agentMatch = !selectedAgent || e.agent === selectedAgent;
+    const filterMatch = filter === 'All' ? true :
+      filter === 'Blocked'  ? (e.action==='blocked'||e.action==='injection') :
+      filter === 'Allowed'  ? e.action==='clean' :
+      filter === 'Warnings' ? (e.action==='warned'||e.action==='approval') : true;
+    return agentMatch && filterMatch;
+  });
+
+  const callsHours = buildHourBuckets(eventsData, 'all');
+  const secHours   = buildHourBuckets(eventsData, 'security');
+
+  const metrics = [
+    { label:'Total Calls',      value: allCalls,   sub:'All agents',  color:'var(--text-primary)' },
+    { label:'Blocked',          value: allBlocked, sub:'Last 24 hrs', color:'var(--red)' },
+    { label:'Injections',       value: allInject,  sub:'Detected',    color:'var(--red)' },
+    { label:'Clean',            value: allClean,   sub:'Passed',      color:'var(--teal)' },
+  ];
+
+  return (
+    <div style={{display:'flex',flex:1,overflow:'hidden'}}>
+      {/* Sidebar */}
+      <aside style={{
+        width:'var(--sidebar-width)', borderRight:'0.5px solid var(--border-strong)',
+        background:'var(--surface)', display:'flex', flexDirection:'column', flexShrink:0, overflow:'auto',
+      }}>
+        <div style={{padding:'12px 12px 8px', borderBottom:'0.5px solid var(--border)'}}>
+          <div style={{fontSize:10,fontWeight:600,letterSpacing:'0.08em',color:'var(--text-tertiary)',textTransform:'uppercase',marginBottom:8}}>Agents</div>
+          {['All','Blocked','Allowed','Warnings'].map(f => (
+            <button key={f} onClick={()=>setFilter(f)} style={{
+              display:'block', width:'100%', textAlign:'left',
+              padding:'4px 8px', borderRadius:6, border:'none',
+              background: filter===f ? 'var(--teal-10)' : 'transparent',
+              color: filter===f ? 'var(--teal)' : 'var(--text-secondary)',
+              fontFamily:'var(--font-ui)', fontSize:12, cursor:'pointer',
+              fontWeight: filter===f ? 600 : 400,
+              marginBottom:1,
+            }}>{f}</button>
+          ))}
+        </div>
+        <div style={{padding:'10px 12px', flex:1, overflow:'auto'}}>
+          <button onClick={()=>setSelectedAgent(null)} style={{
+            display:'flex', alignItems:'center', gap:8, width:'100%',
+            padding:'6px 8px', borderRadius:6, border:'none', cursor:'pointer',
+            background: !selectedAgent ? 'var(--teal-10)' : 'transparent',
+            color: !selectedAgent ? 'var(--teal)' : 'var(--text-secondary)',
+            fontFamily:'var(--font-ui)', fontSize:12, fontWeight: !selectedAgent ? 600 : 400,
+            marginBottom:2,
+          }}>
+            <Dot color="green" /><span>All agents</span>
+          </button>
+          {agentsData.map(agent => (
+            <button key={agent.id} onClick={()=>setSelectedAgent(agent.id)} style={{
+              display:'flex', alignItems:'center', gap:8, width:'100%',
+              padding:'6px 8px', borderRadius:6, border:'none', cursor:'pointer',
+              background: selectedAgent===agent.id ? 'var(--bg-secondary)' : 'transparent',
+              color:'var(--text-primary)',
+              fontFamily:'var(--font-mono)', fontSize:11,
+              marginBottom:2, textAlign:'left',
+            }}>
+              <Dot color={agent.dot} />
+              <span style={{flex:1,overflow:'hidden',textOverflow:'ellipsis',whiteSpace:'nowrap'}}>{agent.name}</span>
+              <span style={{fontSize:10,color:'var(--text-tertiary)',fontFamily:'var(--font-mono)'}}>{agent.calls}</span>
+            </button>
+          ))}
+        </div>
+      </aside>
+
+      {/* Main */}
+      <main style={{flex:1,overflow:'auto',padding:'20px'}}>
+        {/* Metric cards */}
+        <div style={{display:'grid',gridTemplateColumns:'repeat(4,1fr)',gap:10,marginBottom:16}}>
+          {metrics.map(m => (
+            <div key={m.label} style={{
+              background:'var(--surface)', border:'0.5px solid var(--border-strong)',
+              borderRadius:'var(--radius-md)', padding: compact ? '10px 12px' : '14px 16px',
+            }}>
+              <div style={{fontSize:11,color:'var(--text-tertiary)',marginBottom:6,fontWeight:500}}>{m.label}</div>
+              <div style={{fontSize:28,fontWeight:600,color:m.color,letterSpacing:'-0.03em',lineHeight:1}}>{m.value.toLocaleString()}</div>
+              <div style={{fontSize:10,color:'var(--text-tertiary)',marginTop:4}}>{m.sub}</div>
+            </div>
+          ))}
+        </div>
+
+        {/* Charts */}
+        <div style={{display:'grid',gridTemplateColumns:'1fr 1fr',gap:10,marginBottom:16}}>
+          {[
+            {title:'Calls per hour', data:callsHours, color:'var(--teal)'},
+            {title:'Security events per hour', data:secHours, color:'var(--red)'},
+          ].map(chart => (
+            <div key={chart.title} style={{
+              background:'var(--surface)', border:'0.5px solid var(--border-strong)',
+              borderRadius:'var(--radius-md)', padding:'14px 16px',
+            }}>
+              <div style={{display:'flex',justifyContent:'space-between',alignItems:'baseline',marginBottom:8}}>
+                <span style={{fontSize:11,color:'var(--text-secondary)',fontWeight:500}}>{chart.title}</span>
+                <span style={{fontSize:10,color:'var(--text-tertiary)',fontFamily:'var(--font-mono)'}}>24h</span>
+              </div>
+              <MiniBar data={chart.data} color={chart.color} height={60} />
+              <div style={{display:'flex',justifyContent:'space-between',marginTop:4}}>
+                <span style={{fontSize:9,color:'var(--text-tertiary)',fontFamily:'var(--font-mono)'}}>00:00</span>
+                <span style={{fontSize:9,color:'var(--text-tertiary)',fontFamily:'var(--font-mono)'}}>now</span>
+              </div>
+            </div>
+          ))}
+        </div>
+
+        {/* Events table */}
+        <div style={{
+          background:'var(--surface)', border:'0.5px solid var(--border-strong)',
+          borderRadius:'var(--radius-md)', overflow:'hidden',
+        }}>
+          <div style={{padding:'12px 16px', borderBottom:'0.5px solid var(--border)', display:'flex', alignItems:'center', gap:8}}>
+            <span style={{fontSize:12,fontWeight:600,color:'var(--text-primary)'}}>Recent Events</span>
+            <span style={{fontSize:10,color:'var(--text-tertiary)',fontFamily:'var(--font-mono)'}}>({filteredEvents.length})</span>
+          </div>
+          <div style={{overflowX:'auto'}}>
+            <table style={{width:'100%',borderCollapse:'collapse'}}>
+              <thead>
+                <tr style={{background:'var(--bg-secondary)'}}>
+                  {['Time','Tool','Action',...(showDetail?['Detail']:[]),'Agent'].map(h => (
+                    <th key={h} style={{
+                      padding:'7px 12px', textAlign:'left',
+                      fontSize:10, fontWeight:600, color:'var(--text-tertiary)',
+                      letterSpacing:'0.06em', textTransform:'uppercase',
+                      borderBottom:'0.5px solid var(--border)',
+                      whiteSpace:'nowrap',
+                    }}>{h}</th>
+                  ))}
+                </tr>
+              </thead>
+              <tbody>
+                {filteredEvents.map((ev, i) => (
+                  <tr key={ev.id} style={{borderBottom:'0.5px solid var(--border)',background: stripe && i%2!==0 ? 'var(--bg-secondary)' : 'transparent'}}>
+                    <td style={{padding:'8px 12px',fontFamily:'var(--font-mono)',fontSize:11,color:'var(--text-tertiary)',whiteSpace:'nowrap'}}>{ev.time}</td>
+                    <td style={{padding:'8px 12px',fontFamily:'var(--font-mono)',fontSize:11,whiteSpace:'nowrap'}}>{ev.tool}</td>
+                    <td style={{padding:'8px 12px',whiteSpace:'nowrap'}}><Badge type={ev.action} small /></td>
+                    {showDetail && <td style={{padding:'8px 12px',fontSize:11,color:'var(--text-secondary)',maxWidth:320,overflow:'hidden',textOverflow:'ellipsis',whiteSpace:'nowrap'}}>{ev.detail}</td>}
+                    <td style={{padding:'8px 12px',fontFamily:'var(--font-mono)',fontSize:11,color:'var(--text-tertiary)',whiteSpace:'nowrap'}}>{ev.agent}</td>
+                  </tr>
+                ))}
+                {filteredEvents.length === 0 && (
+                  <tr><td colSpan={5} style={{padding:'24px',textAlign:'center',color:'var(--text-tertiary)',fontSize:12}}>No events match current filter</td></tr>
+                )}
+              </tbody>
+            </table>
+          </div>
+        </div>
+      </main>
+    </div>
+  );
+}
+
+/* ─── YAML BUILDER ─── */
+function buildYaml(policy) {
+  if (!policy) return '';
+  const lines = [];
+  lines.push(`agent: ${policy.name}`);
+  lines.push(`injection_mode: ${policy.mode}`);
+  lines.push(`allowed_tools:`);
+  if (policy.tools.length === 0) {
+    lines.push(`  []`);
+  } else {
+    policy.tools.forEach(t => lines.push(`  - ${t}`));
+  }
+  lines.push(`path_constraints:`);
+  const toolsWithPaths = Object.keys(policy.paths || {});
+  if (toolsWithPaths.length === 0) {
+    lines.push(`  {}`);
+  } else {
+    toolsWithPaths.forEach(tool => {
+      const p = policy.paths[tool];
+      lines.push(`  ${tool}:`);
+      if (p.allowed && p.allowed.length > 0) {
+        lines.push(`    allowed:`);
+        p.allowed.forEach(a => lines.push(`      - "${a}"`));
+      }
+      if (p.blocked && p.blocked.length > 0) {
+        lines.push(`    blocked:`);
+        p.blocked.forEach(b => lines.push(`      - "${b}"`));
+      }
+    });
+  }
+  return lines.join('\n');
+}
+
+/* ─── POLICY EDITOR ─── */
+function PolicyEditor({ initialPolicies = {} }) {
+  const [agents, setAgents] = useState(() => JSON.parse(JSON.stringify(initialPolicies)));
+  const firstId = Object.keys(initialPolicies)[0] || null;
+  const [selectedId, setSelectedId] = useState(firstId);
+
+  // Re-seed when live config arrives after initial render
+  useEffect(() => {
+    if (Object.keys(initialPolicies).length === 0) return;
+    setAgents(JSON.parse(JSON.stringify(initialPolicies)));
+    setSelectedId(prev => prev && initialPolicies[prev] ? prev : Object.keys(initialPolicies)[0] || null);
+  }, [JSON.stringify(initialPolicies)]);
+  const [newToolInput, setNewToolInput] = useState('');
+  const [saveState, setSaveState] = useState('idle'); // idle, saving, saved
+  const [pathInputs, setPathInputs] = useState({}); // {tool_col: value}
+  const [deleteConfirm, setDeleteConfirm] = useState(false);
+
+  const policy = agents[selectedId];
+
+  const update = (fn) => setAgents(prev => {
+    const next = JSON.parse(JSON.stringify(prev));
+    fn(next[selectedId]);
+    return next;
+  });
+
+  const handleSave = () => {
+    setSaveState('saving');
+    setTimeout(() => setSaveState('saved'), 900);
+    setTimeout(() => setSaveState('idle'), 2500);
+  };
+
+  const handleDelete = () => {
+    if (!deleteConfirm) { setDeleteConfirm(true); return; }
+    setAgents(prev => {
+      const next = {...prev};
+      delete next[selectedId];
+      return next;
+    });
+    const remaining = Object.keys(agents).filter(k=>k!==selectedId);
+    setSelectedId(remaining[0] || null);
+    setDeleteConfirm(false);
+  };
+
+  const handleAddTool = () => {
+    const t = newToolInput.trim();
+    if (!t || policy.tools.includes(t)) return;
+    update(p => { p.tools.push(t); });
+    setNewToolInput('');
+  };
+
+  const handleRemoveTool = (tool) => {
+    update(p => {
+      p.tools = p.tools.filter(t => t !== tool);
+      delete p.paths[tool];
+    });
+  };
+
+  const handleAddPath = (tool, col) => {
+    const key = `${tool}_${col}`;
+    const val = (pathInputs[key] || '').trim();
+    if (!val) return;
+    update(p => {
+      if (!p.paths[tool]) p.paths[tool] = { allowed:[], blocked:[] };
+      if (!p.paths[tool][col]) p.paths[tool][col] = [];
+      if (!p.paths[tool][col].includes(val)) p.paths[tool][col].push(val);
+    });
+    setPathInputs(prev => ({...prev, [key]: ''}));
+  };
+
+  const handleRemovePath = (tool, col, val) => {
+    update(p => {
+      p.paths[tool][col] = p.paths[tool][col].filter(v => v !== val);
+    });
+  };
+
+  const handleAddAgent = () => {
+    const id = `agent-new-${Date.now()}`;
+    setAgents(prev => ({
+      ...prev,
+      [id]: { name: 'new-agent', mode: 'warn', tools: [], paths: {} }
+    }));
+    setSelectedId(id);
+  };
+
+  const yaml = policy ? buildYaml(policy) : '';
+
+  return (
+    <div style={{display:'flex',flex:1,overflow:'hidden'}}>
+      {/* Sidebar */}
+      <aside style={{
+        width:'var(--sidebar-width)', borderRight:'0.5px solid var(--border-strong)',
+        background:'var(--surface)', display:'flex', flexDirection:'column', flexShrink:0,
+      }}>
+        <div style={{padding:'10px 12px', borderBottom:'0.5px solid var(--border)'}}>
+          <div style={{fontSize:10,fontWeight:600,letterSpacing:'0.08em',color:'var(--text-tertiary)',textTransform:'uppercase'}}>Agents</div>
+        </div>
+        <div style={{flex:1,overflow:'auto',padding:'8px'}}>
+          {Object.entries(agents).map(([id, ag]) => (
+            <button key={id} onClick={()=>{ setSelectedId(id); setDeleteConfirm(false); }} style={{
+              display:'flex', alignItems:'center', gap:8, width:'100%',
+              padding:'7px 8px', borderRadius:6, border:'none', cursor:'pointer',
+              background: selectedId===id ? 'var(--bg-secondary)' : 'transparent',
+              marginBottom:2, textAlign:'left',
+            }}>
+              <Dot color={ag.mode==='block'?'green':ag.mode==='warn'?'amber':'green'} />
+              <span style={{
+                flex:1, fontFamily:'var(--font-mono)', fontSize:11,
+                color: selectedId===id ? 'var(--text-primary)' : 'var(--text-secondary)',
+                overflow:'hidden', textOverflow:'ellipsis', whiteSpace:'nowrap',
+              }}>{ag.name}</span>
+              <ModeBadge mode={ag.mode} small />
+            </button>
+          ))}
+        </div>
+        <div style={{padding:'8px', borderTop:'0.5px solid var(--border)'}}>
+          <button onClick={handleAddAgent} style={{
+            width:'100%', padding:'7px', border:'0.5px dashed var(--border-strong)',
+            borderRadius:6, background:'transparent', cursor:'pointer',
+            color:'var(--text-secondary)', fontFamily:'var(--font-ui)', fontSize:12,
+          }}>+ New agent</button>
+        </div>
+      </aside>
+
+      {/* Editor */}
+      {policy ? (
+        <div style={{flex:1,overflow:'auto',display:'flex',gap:0}}>
+          {/* Form */}
+          <div style={{flex:1,overflow:'auto',padding:'20px',minWidth:0}}>
+            {/* Header */}
+            <div style={{display:'flex',alignItems:'flex-start',justifyContent:'space-between',marginBottom:20}}>
+              <div>
+                <input value={policy.name} onChange={e=>update(p=>{p.name=e.target.value;})}
+                  style={{
+                    fontSize:20, fontWeight:600, border:'none', background:'transparent',
+                    color:'var(--text-primary)', fontFamily:'var(--font-ui)', outline:'none',
+                    borderBottom:'0.5px solid transparent', padding:'2px 0',
+                    width: Math.max(policy.name.length*12, 120),
+                  }}
+                  onFocus={e=>e.target.style.borderBottomColor='var(--teal)'}
+                  onBlur={e=>e.target.style.borderBottomColor='transparent'}
+                />
+                <div style={{fontSize:11,color:'var(--text-tertiary)',marginTop:2}}>Agent configuration</div>
+              </div>
+              <div style={{display:'flex',gap:6}}>
+                <button onClick={handleDelete} style={{
+                  padding:'6px 14px', border:'0.5px solid var(--border-strong)',
+                  borderRadius:'var(--radius-sm)', background: deleteConfirm ? 'var(--red-10)' : 'transparent',
+                  color: deleteConfirm ? 'var(--red)' : 'var(--text-secondary)',
+                  fontFamily:'var(--font-ui)', fontSize:12, cursor:'pointer',
+                }}>{deleteConfirm ? 'Confirm delete' : 'Delete'}</button>
+                <button onClick={handleSave} style={{
+                  padding:'6px 16px', border:'none',
+                  borderRadius:'var(--radius-sm)',
+                  background: saveState==='saved' ? 'var(--teal)' : saveState==='saving' ? 'var(--teal)' : 'var(--teal)',
+                  color:'white', fontFamily:'var(--font-ui)', fontSize:12, fontWeight:600, cursor:'pointer',
+                  opacity: saveState==='saving' ? 0.7 : 1,
+                  transition:'opacity 0.15s',
+                }}>
+                  {saveState==='saving' ? 'Saving…' : saveState==='saved' ? '✓ Saved' : 'Save to disk'}
+                </button>
+              </div>
+            </div>
+
+            {/* Injection mode */}
+            <Section label="Injection mode">
+              <div style={{display:'flex',gap:6}}>
+                {['warn','sanitize','block'].map(m => {
+                  const cfg = MODE_CONFIG[m];
+                  const active = policy.mode === m;
+                  return (
+                    <button key={m} onClick={()=>update(p=>{p.mode=m;})} style={{
+                      padding:'6px 16px', borderRadius:20, border:`0.5px solid ${active ? cfg.color : 'var(--border-strong)'}`,
+                      background: active ? cfg.bg : 'transparent',
+                      color: active ? cfg.color : 'var(--text-secondary)',
+                      fontFamily:'var(--font-mono)', fontSize:11, fontWeight: active ? 600 : 400,
+                      cursor:'pointer', transition:'all 0.15s',
+                    }}>{m}</button>
+                  );
+                })}
+              </div>
+            </Section>
+
+            {/* Allowed tools */}
+            <Section label="Allowed tools">
+              <div style={{display:'flex',flexWrap:'wrap',gap:6,marginBottom:8}}>
+                {policy.tools.map(t => (
+                  <span key={t} style={{
+                    display:'inline-flex', alignItems:'center', gap:4,
+                    padding:'3px 8px', borderRadius:'var(--radius-sm)',
+                    border:'0.5px solid var(--border-strong)', background:'var(--bg-secondary)',
+                    fontFamily:'var(--font-mono)', fontSize:11, color:'var(--text-primary)',
+                  }}>
+                    {t}
+                    <button onClick={()=>handleRemoveTool(t)} style={{
+                      border:'none', background:'none', cursor:'pointer',
+                      color:'var(--text-tertiary)', fontSize:12, lineHeight:1, padding:'0 0 0 2px',
+                    }}>×</button>
+                  </span>
+                ))}
+              </div>
+              <div style={{display:'flex',gap:6}}>
+                <input value={newToolInput} onChange={e=>setNewToolInput(e.target.value)}
+                  onKeyDown={e=>e.key==='Enter'&&handleAddTool()}
+                  placeholder="tool_name…"
+                  style={{
+                    flex:1, padding:'5px 10px', borderRadius:'var(--radius-sm)',
+                    border:'0.5px solid var(--border-strong)', background:'var(--bg-secondary)',
+                    color:'var(--text-primary)', fontFamily:'var(--font-mono)', fontSize:11, outline:'none',
+                  }} />
+                <button onClick={handleAddTool} style={{
+                  padding:'5px 12px', borderRadius:'var(--radius-sm)',
+                  border:'0.5px solid var(--border-strong)', background:'var(--bg-secondary)',
+                  color:'var(--text-secondary)', fontFamily:'var(--font-ui)', fontSize:12, cursor:'pointer',
+                }}>Add</button>
+              </div>
+            </Section>
+
+            {/* Path constraints */}
+            <Section label="Path constraints">
+              {policy.tools.map(tool => (
+                <div key={tool} style={{
+                  border:'0.5px solid var(--border)', borderRadius:'var(--radius-sm)',
+                  marginBottom:8, overflow:'hidden',
+                }}>
+                  <div style={{
+                    padding:'6px 10px', background:'var(--bg-secondary)',
+                    borderBottom:'0.5px solid var(--border)',
+                    fontFamily:'var(--font-mono)', fontSize:11, fontWeight:500,
+                  }}>{tool}</div>
+                  <div style={{display:'grid',gridTemplateColumns:'1fr 1fr',gap:0}}>
+                    {['allowed','blocked'].map((col,ci) => {
+                      const entries = policy.paths?.[tool]?.[col] || [];
+                      const pathKey = `${tool}_${col}`;
+                      return (
+                        <div key={col} style={{
+                          padding:'8px 10px',
+                          borderRight: ci===0 ? '0.5px solid var(--border)' : 'none',
+                        }}>
+                          <div style={{
+                            fontSize:9, fontWeight:600, letterSpacing:'0.08em',
+                            textTransform:'uppercase', marginBottom:6,
+                            color: col==='allowed' ? 'var(--teal)' : 'var(--red)',
+                          }}>{col}</div>
+                          {entries.map(v => (
+                            <div key={v} style={{
+                              display:'flex', alignItems:'center', gap:4,
+                              marginBottom:3,
+                            }}>
+                              <span style={{fontFamily:'var(--font-mono)',fontSize:10,flex:1,color:'var(--text-secondary)'}}>{v}</span>
+                              <button onClick={()=>handleRemovePath(tool,col,v)} style={{
+                                border:'none',background:'none',cursor:'pointer',
+                                color:'var(--text-tertiary)',fontSize:11,padding:0,lineHeight:1,
+                              }}>×</button>
+                            </div>
+                          ))}
+                          <div style={{display:'flex',gap:4,marginTop:4}}>
+                            <input value={pathInputs[pathKey]||''} placeholder="add path…"
+                              onChange={e=>setPathInputs(prev=>({...prev,[pathKey]:e.target.value}))}
+                              onKeyDown={e=>e.key==='Enter'&&handleAddPath(tool,col)}
+                              style={{
+                                flex:1, padding:'3px 6px', borderRadius:5,
+                                border:'0.5px solid var(--border-strong)', background:'var(--bg)',
+                                color:'var(--text-primary)', fontFamily:'var(--font-mono)', fontSize:10, outline:'none',
+                                minWidth:0,
+                              }} />
+                            <button onClick={()=>handleAddPath(tool,col)} style={{
+                              padding:'3px 8px', borderRadius:5,
+                              border:'0.5px solid var(--border-strong)', background:'transparent',
+                              color:'var(--text-tertiary)', fontSize:10, cursor:'pointer',
+                            }}>+</button>
+                          </div>
+                        </div>
+                      );
+                    })}
+                  </div>
+                </div>
+              ))}
+              {policy.tools.length===0 && (
+                <div style={{fontSize:11,color:'var(--text-tertiary)',fontStyle:'italic'}}>Add tools above to configure path constraints</div>
+              )}
+            </Section>
+          </div>
+
+          {/* YAML preview */}
+          <div style={{
+            width:280, borderLeft:'0.5px solid var(--border-strong)',
+            background:'var(--bg-secondary)', display:'flex', flexDirection:'column', flexShrink:0,
+          }}>
+            <div style={{padding:'10px 14px', borderBottom:'0.5px solid var(--border)', display:'flex', alignItems:'center', gap:6}}>
+              <span style={{fontSize:11,fontWeight:600,color:'var(--text-secondary)'}}>YAML preview</span>
+              <span style={{fontSize:9,color:'var(--text-tertiary)',fontFamily:'var(--font-mono)',marginLeft:'auto'}}>read-only</span>
+            </div>
+            <pre style={{
+              flex:1, overflow:'auto', margin:0, padding:'12px 14px',
+              fontFamily:'var(--font-mono)', fontSize:10.5, lineHeight:1.75,
+              color:'var(--text-secondary)', whiteSpace:'pre-wrap', wordBreak:'break-all',
+            }}>
+              <YamlHighlight yaml={yaml} />
+            </pre>
+          </div>
+        </div>
+      ) : (
+        <div style={{flex:1,display:'flex',alignItems:'center',justifyContent:'center',color:'var(--text-tertiary)'}}>
+          No agent selected
+        </div>
+      )}
+    </div>
+  );
+}
+
+function Section({ label, children }) {
+  return (
+    <div style={{marginBottom:20}}>
+      <div style={{fontSize:10,fontWeight:600,letterSpacing:'0.08em',color:'var(--text-tertiary)',textTransform:'uppercase',marginBottom:8}}>{label}</div>
+      {children}
+    </div>
+  );
+}
+
+function YamlHighlight({ yaml }) {
+  const lines = yaml.split('\n');
+  return lines.map((line, i) => {
+    let color = 'var(--text-secondary)';
+    let style = {};
+    if (/^[a-z_]+:/.test(line.trim())) color = 'var(--teal)';
+    if (/^\s+- /.test(line)) color = 'var(--text-primary)';
+    if (/allowed:/.test(line)) { color = 'var(--teal)'; style.fontWeight=600; }
+    if (/blocked:/.test(line)) { color = 'var(--red)'; style.fontWeight=600; }
+    if (/injection_mode:/.test(line)) color = 'var(--purple)';
+    return <span key={i} style={{display:'block',color,...style}}>{line || ' '}</span>;
+  });
+}
+
+/* ─── ROOT ─── */
+const TWEAK_DEFAULTS = /*EDITMODE-BEGIN*/{
+  "accentColor": "#1D9E75",
+  "tableRowStripe": true,
+  "compactMode": false,
+  "sidebarWidth": 220,
+  "showEventDetail": true
+}/*EDITMODE-END*/;
+
+function App() {
+  const [dark, setDark] = useState(false);
+  const [page, setPage] = useState('dashboard');
+  const [filter, setFilter] = useState('All');
+  const [selectedAgent, setSelectedAgent] = useState(null);
+  const { tweaks: rawTweaks, setTweak, panelVisible, setPanelVisible } = useTweaks(TWEAK_DEFAULTS);
+  const tweaks = rawTweaks || TWEAK_DEFAULTS;
+
+  const [rawEntries, setRawEntries] = useState([]);
+  const [config, setConfig]         = useState(null);
+
+  useEffect(() => {
+    async function fetchData() {
+      try {
+        const [entriesRes, configRes] = await Promise.all([
+          fetch('/api/entries'),
+          fetch('/api/config'),
+        ]);
+        const entries = await entriesRes.json();
+        const cfg     = await configRes.json();
+        setRawEntries(Array.isArray(entries) ? entries : []);
+        setConfig(cfg);
+      } catch {}
+    }
+    fetchData();
+    const id = setInterval(fetchData, 5000);
+    return () => clearInterval(id);
+  }, []);
+
+  const eventsData = rawEntries.map((e, i) => ({
+    ...entryToEvent(e, i),
+    _startTime: e.startTime ? new Date(e.startTime) : null,
+  }));
+  const agentsData   = configToAgents(config, eventsData);
+  const policies     = configToPolicies(config);
+
+  useEffect(() => {
+    document.documentElement.setAttribute('data-theme', dark ? 'dark' : 'light');
+  }, [dark]);
+
+  useEffect(() => {
+    if (!tweaks || !tweaks.accentColor) return;
+    document.documentElement.style.setProperty('--teal', tweaks.accentColor);
+    const h = tweaks.accentColor;
+    const r = parseInt(h.slice(1,3),16), g = parseInt(h.slice(3,5),16), b = parseInt(h.slice(5,7),16);
+    document.documentElement.style.setProperty('--teal-10', `rgba(${r},${g},${b},0.10)`);
+    document.documentElement.style.setProperty('--teal-20', `rgba(${r},${g},${b},0.20)`);
+  }, [tweaks?.accentColor]);
+
+  return (
+    <div style={{display:'flex',flexDirection:'column',height:'100vh',overflow:'hidden'}}>
+      <style>{`
+        @keyframes pulse {
+          0%,100% { box-shadow: 0 0 0 2px var(--teal-20); }
+          50%      { box-shadow: 0 0 0 4px var(--teal-10); }
+        }
+        button { transition: opacity 0.12s; }
+        button:hover { opacity: 0.82; }
+        input:focus { border-color: var(--teal) !important; }
+        :root { --sidebar-width: ${tweaks.sidebarWidth}px; }
+      `}</style>
+      <TopNav page={page} setPage={setPage} dark={dark} setDark={setDark} />
+      {page === 'dashboard' && (
+        <Dashboard
+          filter={filter} setFilter={setFilter}
+          selectedAgent={selectedAgent} setSelectedAgent={setSelectedAgent}
+          tweaks={tweaks}
+          agentsData={agentsData}
+          eventsData={eventsData}
+        />
+      )}
+      {page === 'policies' && <PolicyEditor tweaks={tweaks} initialPolicies={policies} />}
+      {panelVisible && (
+        <TweaksPanel onClose={() => setPanelVisible(false)}>
+          <TweakSection title="Appearance">
+            <TweakColor  label="Accent color"    value={tweaks.accentColor}    onChange={v=>setTweak('accentColor',v)} />
+            <TweakToggle label="Dark mode"       value={dark}                  onChange={setDark} />
+            <TweakToggle label="Compact density" value={tweaks.compactMode}    onChange={v=>setTweak('compactMode',v)} />
+          </TweakSection>
+          <TweakSection title="Dashboard">
+            <TweakToggle label="Stripe table rows"  value={tweaks.tableRowStripe}  onChange={v=>setTweak('tableRowStripe',v)} />
+            <TweakToggle label="Show event detail"  value={tweaks.showEventDetail} onChange={v=>setTweak('showEventDetail',v)} />
+          </TweakSection>
+          <TweakSection title="Layout">
+            <TweakSlider label="Sidebar width" value={tweaks.sidebarWidth} min={160} max={320} step={8} onChange={v=>setTweak('sidebarWidth',v)} />
+          </TweakSection>
+        </TweaksPanel>
+      )}
+    </div>
+  );
+}
+
+ReactDOM.createRoot(document.getElementById('root')).render(<App />);
+</script>
+</body>
+</html>

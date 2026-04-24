@@ -1,0 +1,29 @@
+{
+  "id": "claw-safety",
+  "name": "Claw Safety",
+  "description": "Injection detection, permission policies, and audit logging for OpenClaw tool calls.",
+  "version": "0.1.0",
+  "configSchema": {
+    "type": "object",
+    "additionalProperties": false,
+    "properties": {
+      "policyPath": {
+        "type": "string",
+        "description": "Path to policy.yaml. Defaults to ~/.openclaw/claw-safety/policy.yaml"
+      },
+      "auditLogPath": {
+        "type": "string",
+        "description": "Path for audit JSONL output. Defaults to ~/.openclaw/logs/claw-safety-audit.jsonl"
+      },
+      "injectionMode": {
+        "type": "string",
+        "enum": ["warn", "sanitize", "block"],
+        "description": "What to do when injection is detected. Default: block"
+      },
+      "failOpen": {
+        "type": "boolean",
+        "description": "If true, internal errors allow the call through. Default: false"
+      }
+    }
+  }
+}

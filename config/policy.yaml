@@ -1,0 +1,63 @@
+# Claw Safety — Permission Policy
+# Copy to ~/.openclaw/claw-safety/policy.yaml
+#
+# version: schema version (always 1)
+# default: what to do for tools not listed — "allow" or "deny"
+
+version: 1
+default: allow
+
+agents:
+  main:
+    allowed_tools:
+      - read
+      - write
+      - exec
+      - bash
+      - list_dir
+      - web_fetch
+      - browser_navigate
+      - search
+
+    injection_mode: block   # warn | sanitize | block
+
+    path_constraints:
+      read:
+        allowed_paths:
+          - /tmp/
+          - /Users/helgacelia/claw-safety-shield/
+          - /Users/helgacelia/.openclaw/workspace/
+        blocked_paths:
+          - /etc/
+          - /root/
+      write:
+        allowed_paths:
+          - /tmp/
+          - /Users/helgacelia/claw-safety-shield/
+        blocked_paths:
+          - /Users/helgacelia/.openclaw/extensions/
+
+    # Tools that require human approval before running
+    require_approval:
+      exec:
+        title: "Shell command execution"
+        description: "Review the command before it runs."
+        severity: warning
+        timeout_ms: 120000
+        safe_commands:
+          - "^ls\\b"
+          - "^cat\\b"
+          - "^grep\\b"
+          - "^find\\b"
+          - "^echo\\b"
+          - "^pwd$"
+          - "^whoami$"
+          - "^head\\b"
+          - "^tail\\b"
+          - "^wc\\b"
+          - "^diff\\b"
+
+  default:
+    allowed_tools: []         # empty = all tools allowed
+    injection_mode: warn
+    path_constraints: {}

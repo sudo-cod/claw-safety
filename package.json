@@ -1,0 +1,27 @@
+{
+  "name": "claw-safety",
+  "version": "0.1.0",
+  "type": "module",
+  "description": "Non-intrusive security middleware for OpenClaw agents \u2014 injection detection, permission policies, audit logging.",
+  "main": "./index.js",
+  "openclaw": {
+    "extensions": [
+      "./index.js"
+    ]
+  },
+  "scripts": {
+    "test": "node --test tests/*.test.js",
+    "test:watch": "node --test --watch tests/*.test.js"
+  },
+  "dependencies": {
+    "js-yaml": "^4.1.0"
+  },
+  "keywords": [
+    "openclaw",
+    "plugin",
+    "security",
+    "injection",
+    "audit"
+  ],
+  "license": "MIT"
+}
