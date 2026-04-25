@@ -1,4 +1,4 @@
-# claw-safety
+# Claw Safety Shield
 
 Security middleware plugin for OpenClaw agents. Intercepts every tool call before and after execution.
 
