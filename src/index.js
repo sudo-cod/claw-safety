@@ -56,45 +56,80 @@ export default {
       `auditLog=${audit.logPath}`
     );
 
-    // ── Module B: Permission Policy Engine (before_tool_call) ─────────────
-    // Runs BEFORE the tool executes — genuine pre-call enforcement.
-    // If this throws or returns block, the tool never runs.
+    // ── Approval cache ────────────────────────────────────────────────────
+    // When require_approval fires, we store the (sessionId, subject) pair.
+    // If the same subject is retried from the same session after a short
+    // minimum delay (user had time to say yes), we allow it through once.
+    const APPROVAL_MIN_DELAY_MS = 4_000;  // must wait at least 4s before retry
+    const APPROVAL_TTL_MS       = 120_000; // approval window expires after 2 min
+    const pendingApprovals = new Map(); // sessionId -> Map<subject, {earliest, expiry}>
+
+    function storePendingApproval(sessionId, subject) {
+      if (!pendingApprovals.has(sessionId)) pendingApprovals.set(sessionId, new Map());
+      const now = Date.now();
+      pendingApprovals.get(sessionId).set(subject, {
+        earliest: now + APPROVAL_MIN_DELAY_MS,
+        expiry:   now + APPROVAL_TTL_MS,
+      });
+    }
+
+    function consumePendingApproval(sessionId, subject) {
+      const session = pendingApprovals.get(sessionId);
+      if (!session) return false;
+      const entry = session.get(subject);
+      if (!entry) return false;
+      const now = Date.now();
+      if (now < entry.earliest) return false; // retried too fast — block again
+      if (now > entry.expiry)   { session.delete(subject); return false; } // expired
+      session.delete(subject);
+      return true;
+    }
+
+    // ── Module B: Three-Tier Command Firewall (before_tool_call) ─────────
+    // Runs BEFORE the tool executes. Returns block to prevent execution.
+    // require_approval is surfaced as a block with a message the agent
+    // relays to the user through whatever channel they are on.
     api.on("before_tool_call", async (event, ctx) => {
       try {
-        const decision = checkPolicy(
+        const sid     = ctx?.sessionId ?? "unknown";
+        const subject = event.params?.command ?? event.params?.path ?? event.toolName;
+
+        // If this is a retry after the user said yes, allow it through once
+        if (consumePendingApproval(sid, subject)) return;
+
+        const result = checkPolicy(
           policy,
           agentId,
           event.toolName,
           event.params ?? {}
         );
 
-        if (!decision) return; // allow — no conditions
+        if (!result) return; // null = allow
 
-        // Log the security event
-        if (decision.block) {
+        if (result.type === "block") {
           audit.logSecurityEvent({
             type:      "permission_denied",
             toolName:  event.toolName,
             agentId,
-            sessionId: ctx?.sessionId,
-            details:   { reason: decision.blockReason, params: event.params },
+            sessionId: sid,
+            details:   { reason: result.reason, params: event.params },
           });
-          return { block: true, blockReason: decision.blockReason };
+          return { block: true, blockReason: result.reason };
         }
 
-        if (decision.requireApproval) {
+        if (result.type === "require_approval") {
+          storePendingApproval(sid, subject);
           audit.logSecurityEvent({
             type:      "approval_required",
             toolName:  event.toolName,
             agentId,
-            sessionId: ctx?.sessionId,
-            details:   { title: decision.requireApproval.title },
+            sessionId: sid,
+            details:   { message: result.message },
           });
-          return { requireApproval: decision.requireApproval };
+          return { block: true, blockReason: result.message };
         }
 
       } catch (err) {
-        // Re-throw our own errors
         if (err.code?.startsWith("SHIELD_")) throw err;
 
         console.error(`[ClawSafety] before_tool_call error: ${err.message}`);

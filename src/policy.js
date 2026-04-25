@@ -1,33 +1,29 @@
 /**
- * policy.js — Module B: Permission Policy Engine
+ * policy.js — Module B: Three-Tier Command Firewall
  *
- * Loads policy.yaml and enforces it on every before_tool_call event.
- * Runs synchronously in the hook — no subprocess, no network call.
+ * Evaluates every tool call against a three-tier priority ladder:
+ *   1. always_block  — hard block, no approval possible (regex match)
+ *   2. require_approval — block and ask user (substring match)
+ *   3. always_allow  — pass through silently (substring match)
+ *   4. default       — agent-level fallback: allow | require_approval | block
  *
- * Policy format (policy.yaml):
+ * Policy format v2 (policy.yaml):
  * ---
- * version: 1
- * default: allow          # allow | deny — for unlisted tools
- *
+ * version: 2
  * agents:
  *   main:
- *     allowed_tools:      # empty = all tools allowed
- *       - read
- *       - exec
- *     injection_mode: block
- *     path_constraints:
- *       read:
- *         allowed_paths:
- *           - /tmp/
- *           - /Users/you/workspace/
- *         blocked_paths:
- *           - /etc/
- *       write:
- *         allowed_paths:
- *           - /tmp/
- *     blocked_commands:   # regex patterns for exec-type tools
- *       - "rm\\s+-[a-z]*r[a-z]*f"
- *       - "curl.*\\|\\s*(bash|sh)"
+ *     default: require_approval
+ *     always_allow:
+ *       commands: [ls, pwd, cat]
+ *       read_paths: [/tmp/]
+ *       write_paths: []
+ *     require_approval:
+ *       commands: [pip install, npm install]
+ *       write_paths: [~/Documents/]
+ *     always_block:
+ *       commands:
+ *         - "rm\\s+-[a-z]*r[a-z]*f"
+ *       write_paths: [~/.openclaw/, /etc/]
  */
 
 import { readFileSync, existsSync } from "node:fs";
@@ -43,31 +39,25 @@ export class ShieldPermissionError extends Error {
   }
 }
 
-// Built-in dangerous command patterns — always enforced regardless of policy
-const BUILTIN_BLOCKED_COMMANDS = [
-  { re: /rm\s+-[a-z]*r[a-z]*f|rm\s+-[a-z]*f[a-z]*r/i, reason: "recursive delete blocked" },
-  { re: /find\s+.*-delete/i,                            reason: "find-delete blocked" },
-  { re: /shutil\.rmtree/i,                              reason: "programmatic directory deletion blocked" },
-  { re: /curl.*\|\s*(bash|sh|zsh)/i,                   reason: "curl-pipe-to-shell blocked" },
-  { re: /wget.*\|\s*(bash|sh|zsh)/i,                   reason: "wget-pipe-to-shell blocked" },
-  { re: />\s*\/etc\//,                                  reason: "write to /etc blocked" },
-  { re: /chmod\s+777/i,                                 reason: "world-writable chmod blocked" },
-  { re: /\bdd\s+if=/i,                                  reason: "disk write blocked" },
-  { re: /:\(\)\{.*\|.*&\s*\};/,                         reason: "fork bomb blocked" },
-  { re: /mkfs/i,                                        reason: "disk format blocked" },
-  // Protect the shield's own files
-  { re: /claw-safety/i,                                 reason: "modification of shield files blocked" },
-  { re: /openclaw\.json/i,                              reason: "modification of openclaw config blocked" },
-];
+const EXEC_TOOLS  = ["exec", "bash", "shell", "run", "terminal"];
+const READ_TOOLS  = ["read", "cat", "list_dir"];
+const WRITE_TOOLS = ["write", "create_file", "append_file"];
 
-/**
- * Find policy.yaml without hardcoded paths.
- * Resolution order:
- *   1. Explicit path argument
- *   2. ~/.openclaw/claw-safety/policy.yaml
- *   3. ./policy.yaml (cwd)
- *   4. ./config/policy.yaml
- */
+// ── Path helpers ──────────────────────────────────────────────────────────────
+
+function expandHome(p) {
+  if (typeof p !== "string") return String(p);
+  if (p === "~") return homedir();
+  if (p.startsWith("~/")) return join(homedir(), p.slice(2));
+  return p;
+}
+
+function normPath(p) {
+  return resolve(expandHome(p)) + "/";
+}
+
+// ── Policy loading ────────────────────────────────────────────────────────────
+
 export function findPolicy(explicitPath) {
   if (explicitPath && existsSync(explicitPath)) return explicitPath;
 
@@ -83,144 +73,188 @@ export function findPolicy(explicitPath) {
   return null;
 }
 
-/**
- * Load and parse a policy file.
- */
 export function loadPolicy(policyPath) {
   const target = findPolicy(policyPath);
   if (!target) {
     console.warn("[ClawSafety] No policy.yaml found. Using permissive defaults. " +
       "Create ~/.openclaw/claw-safety/policy.yaml to enforce rules.");
-    return { version: 1, default: "allow", agents: {} };
+    return { version: 2, agents: {} };
   }
 
   try {
-    const raw = readFileSync(target, "utf8");
+    const raw    = readFileSync(target, "utf8");
     const parsed = yamlLoad(raw);
-    console.log(`[ClawSafety] Policy loaded from ${target}`);
+    console.log(`[ClawSafety] Policy v${parsed.version ?? "?"} loaded from ${target}`);
     return parsed;
   } catch (err) {
     throw new Error(`[ClawSafety] Failed to load policy from ${target}: ${err.message}`);
   }
 }
 
+// ── Agent rules ───────────────────────────────────────────────────────────────
+
+function resolveAgentRules(policy, agentId) {
+  return policy.agents?.[agentId] ?? policy.agents?.default ?? {};
+}
+
+// ── Tier matching ─────────────────────────────────────────────────────────────
+
 /**
- * Get the policy rules for a specific agent.
- * Falls back to "default" agent, then to an empty ruleset.
+ * Match a command string through the three tiers.
+ * Returns null (allow), { type: "block" }, { type: "require_approval" }, or "default".
  */
-function agentRules(policy, agentId) {
-  return policy.agents?.[agentId]
-      ?? policy.agents?.default
-      ?? {};
+// Split a command on shell separators into individual segments.
+// Strips cd-only segments (e.g. "cd /some/path") since they carry no intent —
+// the real command is what follows.
+function segments(command) {
+  return command
+    .split(/\|{1,2}|&&|;/)
+    .map(s => s.trim())
+    .filter(s => s && !/^cd(\s+\S+)?$/.test(s));
+}
+
+function matchCommand(rules, command) {
+  // Tier 1 — always_block: regex against the full command string, case-insensitive.
+  // Checked first and wins unconditionally.
+  for (const pattern of rules.always_block?.commands ?? []) {
+    try {
+      if (new RegExp(pattern, "i").test(command)) {
+        return { type: "block", reason: `matches blocked pattern "${pattern}"` };
+      }
+    } catch {
+      console.warn(`[ClawSafety] Invalid regex in always_block.commands: ${pattern}`);
+    }
+  }
+
+  // For tiers 2 & 3, check each meaningful segment independently and take
+  // the most restrictive result across all segments.
+  // This lets "cd /path && git status" match always_allow via the git status segment,
+  // while "cd /path && pip install X" correctly requires approval via the pip segment.
+  const segs = segments(command);
+  let mostRestrictive = "default"; // default < allow < require_approval
+
+  for (const seg of segs) {
+    const segLower = seg.toLowerCase();
+
+    // Tier 2 — require_approval: substring match
+    for (const sub of rules.require_approval?.commands ?? []) {
+      if (segLower.includes(sub.toLowerCase())) {
+        return { type: "require_approval" }; // require_approval is the worst non-block outcome
+      }
+    }
+
+    // Tier 3 — always_allow: substring match
+    for (const sub of rules.always_allow?.commands ?? []) {
+      if (segLower.includes(sub.toLowerCase())) {
+        mostRestrictive = "allow";
+        break;
+      }
+    }
+  }
+
+  return mostRestrictive === "allow" ? null : "default";
 }
 
 /**
- * Check a tool call against the policy.
+ * Match a path through the three tiers for a given operation ("read" | "write").
+ * Returns null (allow), { type: "block" }, { type: "require_approval" }, or "default".
+ */
+function matchPath(rules, path, operation) {
+  const norm = normPath(path);
+
+  if (operation === "write") {
+    // Tier 1 — always_block.write_paths
+    for (const p of rules.always_block?.write_paths ?? []) {
+      if (norm.startsWith(normPath(p))) {
+        return { type: "block", reason: `write to "${path}" is in always_block.write_paths` };
+      }
+    }
+
+    // Tier 2 — require_approval.write_paths
+    for (const p of rules.require_approval?.write_paths ?? []) {
+      if (norm.startsWith(normPath(p))) {
+        return { type: "require_approval" };
+      }
+    }
+
+    // Tier 3 — always_allow.write_paths
+    for (const p of rules.always_allow?.write_paths ?? []) {
+      if (norm.startsWith(normPath(p))) {
+        return null; // allow
+      }
+    }
+  } else {
+    // read — only always_allow.read_paths applies
+    for (const p of rules.always_allow?.read_paths ?? []) {
+      if (norm.startsWith(normPath(p))) {
+        return null; // allow
+      }
+    }
+  }
+
+  return "default";
+}
+
+// ── Public API ────────────────────────────────────────────────────────────────
+
+/**
+ * Evaluate a tool call against the policy.
  *
- * @param {object} policy     Loaded policy object
- * @param {string} agentId    e.g. "main"
- * @param {string} toolName   e.g. "exec"
- * @param {object} params     Tool parameters
- * @returns {object|null}     OpenClaw hook result or null (allow)
+ * @param {object} policy   Loaded policy object
+ * @param {string} agentId  e.g. "main"
+ * @param {string} toolName e.g. "exec"
+ * @param {object} params   Tool parameters
+ * @returns {null | { type: "block", reason: string } | { type: "require_approval", message: string }}
  */
 export function checkPolicy(policy, agentId, toolName, params) {
-  const rules       = agentRules(policy, agentId);
-  const defaultAct  = policy.default ?? "allow";
+  const rules         = resolveAgentRules(policy, agentId);
+  const defaultAction = rules.default ?? "require_approval";
 
-  // ── 1. Tool whitelist ───────────────────────────────────────────────────
-  const allowedTools = rules.allowed_tools ?? [];
-  const hasWhitelist  = allowedTools.length > 0;
-
-  if (hasWhitelist && !allowedTools.includes(toolName)) {
-    return {
-      block: true,
-      blockReason: `[ClawSafety] Tool "${toolName}" is not in the allowed_tools list for agent "${agentId}".`,
-    };
-  }
-
-  if (!hasWhitelist && defaultAct === "deny") {
-    return {
-      block: true,
-      blockReason: `[ClawSafety] Tool "${toolName}" is not listed in policy and default is "deny".`,
-    };
-  }
-
-  // ── 2. Built-in dangerous command patterns ──────────────────────────────
   const command = params?.command ?? params?.cmd ?? params?.input ?? "";
-  if (command && ["exec", "bash", "shell", "run", "terminal"].includes(toolName)) {
-    for (const { re, reason } of BUILTIN_BLOCKED_COMMANDS) {
-      if (re.test(command)) {
-        return {
-          block: true,
-          blockReason: `[ClawSafety] ${reason}: ${command.slice(0, 80)}`,
-        };
-      }
-    }
+  const path    = params?.path    ?? params?.file ?? params?.filePath ?? "";
+
+  let match = "default";
+
+  if (EXEC_TOOLS.includes(toolName) && command) {
+    match = matchCommand(rules, command);
+  } else if (WRITE_TOOLS.includes(toolName) && path) {
+    match = matchPath(rules, path, "write");
+  } else if (READ_TOOLS.includes(toolName) && path) {
+    match = matchPath(rules, path, "read");
   }
+  // Other tools (web_fetch, browser_navigate, search) skip to default
 
-  // ── 3. Policy-level blocked command patterns ────────────────────────────
-  const blockedCmds = rules.blocked_commands ?? [];
-  if (command && blockedCmds.length) {
-    for (const raw of blockedCmds) {
-      const re = new RegExp(raw, "i");
-      if (re.test(command)) {
-        return {
-          block: true,
-          blockReason: `[ClawSafety] Command matches blocked pattern "${raw}": ${command.slice(0, 80)}`,
-        };
-      }
-    }
-  }
+  // Explicit tier match
+  if (match === null) return null; // always_allow
 
-  // ── 4. Path constraints ─────────────────────────────────────────────────
-  const pathArg = params?.path ?? params?.file ?? params?.filePath ?? "";
-  if (pathArg) {
-    const constraints  = rules.path_constraints?.[toolName];
-    const allowedPaths = constraints?.allowed_paths ?? [];
-    const blockedPaths = constraints?.blocked_paths ?? [];
-
-    const normPath = resolve(pathArg) + "/";  // trailing slash prevents prefix collisions
-
-    // Explicit block list (e.g. /etc/, /root/)
-    for (const blocked of blockedPaths) {
-      if (normPath.startsWith(resolve(blocked) + "/")) {
-        return {
-          block: true,
-          blockReason: `[ClawSafety] Path "${pathArg}" is in the blocked_paths list for tool "${toolName}".`,
-        };
-      }
-    }
-
-    // Allowed list — if specified, path must be inside one of them
-    if (allowedPaths.length > 0) {
-      const allowed = allowedPaths.some(p => normPath.startsWith(resolve(p) + "/"));
-      if (!allowed) {
-        return {
-          block: true,
-          blockReason: `[ClawSafety] Path "${pathArg}" is outside allowed directories for tool "${toolName}". ` +
-            `Allowed: ${allowedPaths.join(", ")}`,
-        };
-      }
-    }
-  }
-
-  // ── 5. requireApproval ──────────────────────────────────────────────────
-  const approval = rules.require_approval?.[toolName];
-  if (approval) {
-    const safePatterns = approval.safe_commands ?? [];
-    const isSafe = command && safePatterns.some(p => new RegExp(p, "i").test(command.trim()));
-    if (!isSafe) {
+  if (match !== "default") {
+    if (match.type === "block") {
       return {
-        requireApproval: {
-          title:           approval.title       ?? `Approval required: ${toolName}`,
-          description:     approval.description ?? `Tool "${toolName}" requires human approval.`,
-          severity:        approval.severity    ?? "warning",
-          timeoutMs:       approval.timeout_ms  ?? 120_000,
-          timeoutBehavior: "deny",
-        },
+        type:   "block",
+        reason: `[ClawSafety] blocked: ${match.reason}. This action is not permitted.`,
+      };
+    }
+    if (match.type === "require_approval") {
+      return {
+        type:    "require_approval",
+        message: `[ClawSafety] "${command || path || toolName}" requires your approval before running. Reply "yes" to allow it or "no" to cancel.`,
       };
     }
   }
 
-  return null; // allow
+  // Default fallback
+  if (defaultAction === "allow") return null;
+
+  if (defaultAction === "block") {
+    return {
+      type:   "block",
+      reason: `[ClawSafety] "${toolName}" is not permitted by default policy.`,
+    };
+  }
+
+  // require_approval (default)
+  return {
+    type:    "require_approval",
+    message: `[ClawSafety] "${command || path || toolName}" requires your approval before running. Reply "yes" to allow it or "no" to cancel.`,
+  };
 }

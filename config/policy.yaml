@@ -1,63 +1,77 @@
-# Claw Safety — Permission Policy
-# Copy to ~/.openclaw/claw-safety/policy.yaml
-#
-# version: schema version (always 1)
-# default: what to do for tools not listed — "allow" or "deny"
-
-version: 1
-default: allow
+version: 2
 
 agents:
   main:
-    allowed_tools:
-      - read
-      - write
-      - exec
-      - bash
-      - list_dir
-      - web_fetch
-      - browser_navigate
-      - search
+    default: require_approval   # fallback for anything not matched: allow | require_approval | block
 
-    injection_mode: block   # warn | sanitize | block
+    always_allow:
+      commands:                 # substring match against the full command string (case-insensitive)
+        - ls
+        - pwd
+        - whoami
+        - echo
+        - cat
+        - grep
+        - find
+        - head
+        - tail
+        - wc
+        - diff
+        - git status
+        - git log
+        - git diff
+      read_paths:
+        - /tmp/
+        - ~/workspace/
+      write_paths: []
 
-    path_constraints:
-      read:
-        allowed_paths:
-          - /tmp/
-          - /Users/helgacelia/claw-safety-shield/
-          - /Users/helgacelia/.openclaw/workspace/
-        blocked_paths:
-          - /etc/
-          - /root/
-      write:
-        allowed_paths:
-          - /tmp/
-          - /Users/helgacelia/claw-safety-shield/
-        blocked_paths:
-          - /Users/helgacelia/.openclaw/extensions/
-
-    # Tools that require human approval before running
     require_approval:
-      exec:
-        title: "Shell command execution"
-        description: "Review the command before it runs."
-        severity: warning
-        timeout_ms: 120000
-        safe_commands:
-          - "^ls\\b"
-          - "^cat\\b"
-          - "^grep\\b"
-          - "^find\\b"
-          - "^echo\\b"
-          - "^pwd$"
-          - "^whoami$"
-          - "^head\\b"
-          - "^tail\\b"
-          - "^wc\\b"
-          - "^diff\\b"
+      commands:                 # substring match
+        - pip install
+        - npm install
+        - brew install
+        - curl
+        - wget
+        - git push
+        - git commit
+        - git clone
+      write_paths:
+        - ~/Documents/
+        - ~/Desktop/
+
+    always_block:
+      commands:                 # regex patterns, matched case-insensitive
+        - "rm\\s+-[a-z]*r[a-z]*f"
+        - "curl.*\\|\\s*(bash|sh|zsh)"
+        - "wget.*\\|\\s*(bash|sh|zsh)"
+        - "mkfs"
+        - "dd\\s+if="
+        - "chmod\\s+777"
+        - ":\\(\\)\\{.*\\|.*&\\s*\\};"
+        - "shutil\\.rmtree"
+        - "claw-safety"
+        - "openclaw\\.json"
+      write_paths:
+        - ~/.openclaw/
+        - /etc/
+        - /root/
+        - ~/.ssh/
 
   default:
-    allowed_tools: []         # empty = all tools allowed
-    injection_mode: warn
-    path_constraints: {}
+    default: require_approval
+    always_allow:
+      commands: [ls, pwd, whoami, echo, cat, grep]
+      read_paths: [/tmp/]
+      write_paths: []
+    require_approval:
+      commands: []
+      write_paths: []
+    always_block:
+      commands:
+        - "rm\\s+-[a-z]*r[a-z]*f"
+        - "curl.*\\|\\s*(bash|sh|zsh)"
+        - "wget.*\\|\\s*(bash|sh|zsh)"
+      write_paths:
+        - ~/.openclaw/
+        - /etc/
+        - ~/.ssh/
