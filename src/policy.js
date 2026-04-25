@@ -1,11 +1,16 @@
 /**
  * policy.js — Module B: Three-Tier Command Firewall
  *
- * Evaluates every tool call against a three-tier priority ladder:
- *   1. always_block  — hard block, no approval possible (regex match)
- *   2. require_approval — block and ask user (substring match)
- *   3. always_allow  — pass through silently (substring match)
- *   4. default       — agent-level fallback: allow | require_approval | block
+ * Evaluates every tool call against a strict priority ladder:
+ *   1. always_block.commands    — regex on full command → hard block
+ *   2. always_block.read_paths  — prefix match on path (read tools) → hard block
+ *   3. always_block.write_paths — prefix match on path (write tools) → hard block
+ *   4. require_approval.commands    — substring on full command → ask user
+ *   5. require_approval.write_paths — prefix match on path (write tools) → ask user
+ *   6. always_allow.commands    — substring on full command → allow silently
+ *   7. always_allow.read_paths  — prefix match on path (read tools) → allow silently
+ *   8. always_allow.write_paths — prefix match on path (write tools) → allow silently
+ *   9. default                  — agent's fallback: allow | require_approval | block
  *
  * Policy format v2 (policy.yaml):
  * ---
@@ -14,7 +19,7 @@
  *   main:
  *     default: require_approval
  *     always_allow:
- *       commands: [ls, pwd, cat]
+ *       commands: [ls, git status]
  *       read_paths: [/tmp/]
  *       write_paths: []
  *     require_approval:
@@ -23,6 +28,7 @@
  *     always_block:
  *       commands:
  *         - "rm\\s+-[a-z]*r[a-z]*f"
+ *       read_paths: [~/.openclaw/credentials/]
  *       write_paths: [~/.openclaw/, /etc/]
  */
 
@@ -61,10 +67,14 @@ function normPath(p) {
 export function findPolicy(explicitPath) {
   if (explicitPath && existsSync(explicitPath)) return explicitPath;
 
+  if (process.env.SHIELD_CONFIG && existsSync(process.env.SHIELD_CONFIG)) {
+    return process.env.SHIELD_CONFIG;
+  }
+
   const candidates = [
     join(homedir(), ".openclaw", "claw-safety", "policy.yaml"),
-    join(process.cwd(), "policy.yaml"),
     join(process.cwd(), "config", "policy.yaml"),
+    join(process.cwd(), "policy.yaml"),
   ];
 
   for (const p of candidates) {
@@ -97,104 +107,6 @@ function resolveAgentRules(policy, agentId) {
   return policy.agents?.[agentId] ?? policy.agents?.default ?? {};
 }
 
-// ── Tier matching ─────────────────────────────────────────────────────────────
-
-/**
- * Match a command string through the three tiers.
- * Returns null (allow), { type: "block" }, { type: "require_approval" }, or "default".
- */
-// Split a command on shell separators into individual segments.
-// Strips cd-only segments (e.g. "cd /some/path") since they carry no intent —
-// the real command is what follows.
-function segments(command) {
-  return command
-    .split(/\|{1,2}|&&|;/)
-    .map(s => s.trim())
-    .filter(s => s && !/^cd(\s+\S+)?$/.test(s));
-}
-
-function matchCommand(rules, command) {
-  // Tier 1 — always_block: regex against the full command string, case-insensitive.
-  // Checked first and wins unconditionally.
-  for (const pattern of rules.always_block?.commands ?? []) {
-    try {
-      if (new RegExp(pattern, "i").test(command)) {
-        return { type: "block", reason: `matches blocked pattern "${pattern}"` };
-      }
-    } catch {
-      console.warn(`[ClawSafety] Invalid regex in always_block.commands: ${pattern}`);
-    }
-  }
-
-  // For tiers 2 & 3, check each meaningful segment independently and take
-  // the most restrictive result across all segments.
-  // This lets "cd /path && git status" match always_allow via the git status segment,
-  // while "cd /path && pip install X" correctly requires approval via the pip segment.
-  const segs = segments(command);
-  let mostRestrictive = "default"; // default < allow < require_approval
-
-  for (const seg of segs) {
-    const segLower = seg.toLowerCase();
-
-    // Tier 2 — require_approval: substring match
-    for (const sub of rules.require_approval?.commands ?? []) {
-      if (segLower.includes(sub.toLowerCase())) {
-        return { type: "require_approval" }; // require_approval is the worst non-block outcome
-      }
-    }
-
-    // Tier 3 — always_allow: substring match
-    for (const sub of rules.always_allow?.commands ?? []) {
-      if (segLower.includes(sub.toLowerCase())) {
-        mostRestrictive = "allow";
-        break;
-      }
-    }
-  }
-
-  return mostRestrictive === "allow" ? null : "default";
-}
-
-/**
- * Match a path through the three tiers for a given operation ("read" | "write").
- * Returns null (allow), { type: "block" }, { type: "require_approval" }, or "default".
- */
-function matchPath(rules, path, operation) {
-  const norm = normPath(path);
-
-  if (operation === "write") {
-    // Tier 1 — always_block.write_paths
-    for (const p of rules.always_block?.write_paths ?? []) {
-      if (norm.startsWith(normPath(p))) {
-        return { type: "block", reason: `write to "${path}" is in always_block.write_paths` };
-      }
-    }
-
-    // Tier 2 — require_approval.write_paths
-    for (const p of rules.require_approval?.write_paths ?? []) {
-      if (norm.startsWith(normPath(p))) {
-        return { type: "require_approval" };
-      }
-    }
-
-    // Tier 3 — always_allow.write_paths
-    for (const p of rules.always_allow?.write_paths ?? []) {
-      if (norm.startsWith(normPath(p))) {
-        return null; // allow
-      }
-    }
-  } else {
-    // read — only always_allow.read_paths applies
-    for (const p of rules.always_allow?.read_paths ?? []) {
-      if (norm.startsWith(normPath(p))) {
-        return null; // allow
-      }
-    }
-  }
-
-  return "default";
-}
-
 // ── Public API ────────────────────────────────────────────────────────────────
 
 /**
@@ -213,48 +125,134 @@ export function checkPolicy(policy, agentId, toolName, params) {
   const command = params?.command ?? params?.cmd ?? params?.input ?? "";
   const path    = params?.path    ?? params?.file ?? params?.filePath ?? "";
 
-  let match = "default";
+  const isExec  = EXEC_TOOLS.includes(toolName);
+  const isRead  = READ_TOOLS.includes(toolName);
+  const isWrite = WRITE_TOOLS.includes(toolName);
 
-  if (EXEC_TOOLS.includes(toolName) && command) {
-    match = matchCommand(rules, command);
-  } else if (WRITE_TOOLS.includes(toolName) && path) {
-    match = matchPath(rules, path, "write");
-  } else if (READ_TOOLS.includes(toolName) && path) {
-    match = matchPath(rules, path, "read");
-  }
-  // Other tools (web_fetch, browser_navigate, search) skip to default
-
-  // Explicit tier match
-  if (match === null) return null; // always_allow
-
-  if (match !== "default") {
-    if (match.type === "block") {
-      return {
-        type:   "block",
-        reason: `[ClawSafety] blocked: ${match.reason}. This action is not permitted.`,
-      };
-    }
-    if (match.type === "require_approval") {
-      return {
-        type:    "require_approval",
-        message: `[ClawSafety] "${command || path || toolName}" requires your approval before running. Reply "yes" to allow it or "no" to cancel.`,
-      };
+  // ── Step 1: always_block.commands (regex, full command string) ────────────
+  if (isExec && command) {
+    for (const pattern of rules.always_block?.commands ?? []) {
+      try {
+        if (new RegExp(pattern, "i").test(command)) {
+          return {
+            type:   "block",
+            reason: `[ClawSafety] blocked: matches blocked pattern "${pattern}"`,
+          };
+        }
+      } catch {
+        console.warn(`[ClawSafety] Invalid regex in always_block.commands: ${pattern}`);
+      }
     }
   }
 
-  // Default fallback
+  // ── Step 2: always_block.read_paths ──────────────────────────────────────
+  if (isRead && path) {
+    const norm = normPath(path);
+    for (const p of rules.always_block?.read_paths ?? []) {
+      if (norm.startsWith(normPath(p))) {
+        return {
+          type:   "block",
+          reason: `[ClawSafety] blocked: read from "${path}" is in always_block.read_paths`,
+        };
+      }
+    }
+  }
+
+  // ── Step 3: always_block.write_paths ─────────────────────────────────────
+  if (isWrite && path) {
+    const norm = normPath(path);
+    for (const p of rules.always_block?.write_paths ?? []) {
+      if (norm.startsWith(normPath(p))) {
+        return {
+          type:   "block",
+          reason: `[ClawSafety] blocked: write to "${path}" is in always_block.write_paths`,
+        };
+      }
+    }
+  }
+
+  // ── Step 4: require_approval.read_paths ──────────────────────────────────
+  if (isRead && path) {
+    const norm = normPath(path);
+    for (const p of rules.require_approval?.read_paths ?? []) {
+      if (norm.startsWith(normPath(p))) {
+        return {
+          type:    "require_approval",
+          message: `[ClawSafety] "${path}" requires your approval. Reply "yes" to allow or "no" to cancel.`,
+        };
+      }
+    }
+  }
+
+  // ── Step 5: require_approval.commands (substring, case-insensitive) ──────
+  if (isExec && command) {
+    const lower = command.toLowerCase();
+    for (const sub of rules.require_approval?.commands ?? []) {
+      if (lower.includes(sub.toLowerCase())) {
+        return {
+          type:    "require_approval",
+          message: `[ClawSafety] "${command}" requires your approval. Reply "yes" to allow or "no" to cancel.`,
+        };
+      }
+    }
+  }
+
+  // ── Step 6: require_approval.write_paths ─────────────────────────────────
+  if (isWrite && path) {
+    const norm = normPath(path);
+    for (const p of rules.require_approval?.write_paths ?? []) {
+      if (norm.startsWith(normPath(p))) {
+        return {
+          type:    "require_approval",
+          message: `[ClawSafety] "${path}" requires your approval. Reply "yes" to allow or "no" to cancel.`,
+        };
+      }
+    }
+  }
+
+  // ── Step 7: always_allow.commands (substring, case-insensitive) ──────────
+  if (isExec && command) {
+    const lower = command.toLowerCase();
+    for (const sub of rules.always_allow?.commands ?? []) {
+      if (lower.includes(sub.toLowerCase())) {
+        return null; // allow silently
+      }
+    }
+  }
+
+  // ── Step 8: always_allow.read_paths ──────────────────────────────────────
+  if (isRead && path) {
+    const norm = normPath(path);
+    for (const p of rules.always_allow?.read_paths ?? []) {
+      if (norm.startsWith(normPath(p))) {
+        return null; // allow silently
+      }
+    }
+  }
+
+  // ── Step 9: always_allow.write_paths ─────────────────────────────────────
+  if (isWrite && path) {
+    const norm = normPath(path);
+    for (const p of rules.always_allow?.write_paths ?? []) {
+      if (norm.startsWith(normPath(p))) {
+        return null; // allow silently
+      }
+    }
+  }
+
+  // ── Step 10: default ──────────────────────────────────────────────────────
   if (defaultAction === "allow") return null;
 
   if (defaultAction === "block") {
     return {
       type:   "block",
-      reason: `[ClawSafety] "${toolName}" is not permitted by default policy.`,
+      reason: `[ClawSafety] "${command || path || toolName}" is not permitted by default policy.`,
     };
   }
 
   // require_approval (default)
   return {
     type:    "require_approval",
-    message: `[ClawSafety] "${command || path || toolName}" requires your approval before running. Reply "yes" to allow it or "no" to cancel.`,
+    message: `[ClawSafety] "${command || path || toolName}" requires your approval. Reply "yes" to allow or "no" to cancel.`,
   };
 }

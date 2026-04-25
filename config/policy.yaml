@@ -2,10 +2,10 @@ version: 2
 
 agents:
   main:
-    default: require_approval   # fallback for anything not matched: allow | require_approval | block
+    default: require_approval
 
     always_allow:
-      commands:                 # substring match against the full command string (case-insensitive)
+      commands:
         - ls
         - pwd
         - whoami
@@ -23,10 +23,12 @@ agents:
       read_paths:
         - /tmp/
         - ~/workspace/
-      write_paths: []
+        - ~/Downloads/claw-safety/
+      write_paths:
+        - /tmp/
 
     require_approval:
-      commands:                 # substring match
+      commands:
         - pip install
         - npm install
         - brew install
@@ -35,15 +37,18 @@ agents:
         - git push
         - git commit
         - git clone
+      read_paths: []
       write_paths:
         - ~/Documents/
         - ~/Desktop/
 
     always_block:
-      commands:                 # regex patterns, matched case-insensitive
+      commands:
         - "rm\\s+-[a-z]*r[a-z]*f"
+        - "rm\\s+-[a-z]*f[a-z]*r"
         - "curl.*\\|\\s*(bash|sh|zsh)"
         - "wget.*\\|\\s*(bash|sh|zsh)"
+        - "find\\s+.*-delete"
         - "mkfs"
         - "dd\\s+if="
         - "chmod\\s+777"
@@ -51,6 +56,17 @@ agents:
         - "shutil\\.rmtree"
         - "claw-safety"
         - "openclaw\\.json"
+        - "auth-profiles"
+        - "credentials"
+        - "\\.openclaw/agents"
+      read_paths:
+        - ~/.openclaw/credentials/
+        - ~/.openclaw/agents/
+        - ~/.ssh/
+        - ~/.aws/
+        - ~/.gnupg/
+        - ~/.env
+        - ~/.netrc
       write_paths:
         - ~/.openclaw/
         - /etc/
@@ -70,7 +86,9 @@ agents:
       commands:
         - "rm\\s+-[a-z]*r[a-z]*f"
         - "curl.*\\|\\s*(bash|sh|zsh)"
-        - "wget.*\\|\\s*(bash|sh|zsh)"
+      read_paths:
+        - ~/.openclaw/credentials/
+        - ~/.ssh/
       write_paths:
         - ~/.openclaw/
         - /etc/

@@ -94,20 +94,19 @@ describe("applyInjectionPolicy", () => {
   });
 });
 
-// ── Module B: Three-Tier Command Firewall ────────────────────────────────────
+// ── Module B: Two-Tier Command Firewall ──────────────────────────────────────
 
 const FULL_POLICY = {
   version: 2,
   agents: {
     main: {
-      default: "require_approval",
       always_allow: {
         commands: ["ls", "pwd", "whoami", "echo", "cat", "grep", "git status", "git log", "git diff"],
         read_paths: ["/tmp/", "~/workspace/"],
         write_paths: [],
       },
       require_approval: {
-        commands: ["pip install", "npm install", "curl", "wget", "git push", "git commit"],
+        commands: ["pip", "npm install", "curl", "wget", "git push", "git commit"],
         write_paths: ["~/Documents/", "~/Desktop/"],
       },
       always_block: {
@@ -122,7 +121,6 @@ const FULL_POLICY = {
       },
     },
     default: {
-      default: "require_approval",
       always_allow: { commands: ["ls", "pwd"], read_paths: ["/tmp/"], write_paths: [] },
       require_approval: { commands: [], write_paths: [] },
       always_block: { commands: ["rm\\s+-[a-z]*r[a-z]*f"], write_paths: ["/etc/"] },
@@ -144,7 +142,7 @@ describe("checkPolicy — tier matching", () => {
     assert.equal(r?.type, "block");
   });
 
-  it("always_block beats always_allow: ls && rm -rf / is blocked", () => {
+  it("always_block beats require_approval: ls && rm -rf / is blocked", () => {
     const r = checkPolicy(FULL_POLICY, "main", "exec", { command: "ls && rm -rf /" });
     assert.equal(r?.type, "block");
   });
@@ -172,6 +170,11 @@ describe("checkPolicy — tier matching", () => {
     assert.ok(r.message.includes("requires your approval"));
   });
 
+  it("require_approval: pip3 install needs approval", () => {
+    const r = checkPolicy(FULL_POLICY, "main", "exec", { command: "pip3 install seaborn" });
+    assert.equal(r?.type, "require_approval");
+  });
+
   it("require_approval: git push needs approval", () => {
     const r = checkPolicy(FULL_POLICY, "main", "exec", { command: "git push origin main" });
     assert.equal(r?.type, "require_approval");
@@ -196,36 +199,33 @@ describe("checkPolicy — tier matching", () => {
     assert.equal(checkPolicy(FULL_POLICY, "main", "read", { path: "/tmp/notes.txt" }), null);
   });
 
-  // ── default fallback ──────────────────────────────────────────────────────
+  it("always_allow beats require_approval: ls && pip install → require_approval wins for pip segment", () => {
+    const r = checkPolicy(FULL_POLICY, "main", "exec", { command: "ls && pip install requests" });
+    assert.equal(r?.type, "require_approval");
+  });
 
-  it("default=require_approval: unknown command needs approval", () => {
+  // ── default (auto-allow) ──────────────────────────────────────────────────
+
+  it("default: unknown command requires approval", () => {
     const r = checkPolicy(FULL_POLICY, "main", "exec", { command: "some_unknown_command" });
     assert.equal(r?.type, "require_approval");
   });
 
-  it("default=allow: unknown command passes when default is allow", () => {
-    const p = { version: 2, agents: { main: { default: "allow", always_allow: { commands: [], read_paths: [], write_paths: [] }, require_approval: { commands: [], write_paths: [] }, always_block: { commands: [], write_paths: [] } } } };
-    assert.equal(checkPolicy(p, "main", "exec", { command: "some_command" }), null);
+  it("default: web_fetch requires approval", () => {
+    const r = checkPolicy(FULL_POLICY, "main", "web_fetch", { url: "https://example.com" });
+    assert.equal(r?.type, "require_approval");
   });
 
-  it("default=block: unknown command is blocked when default is block", () => {
-    const p = { version: 2, agents: { main: { default: "block", always_allow: { commands: [], read_paths: [], write_paths: [] }, require_approval: { commands: [], write_paths: [] }, always_block: { commands: [], write_paths: [] } } } };
-    const r = checkPolicy(p, "main", "exec", { command: "some_command" });
-    assert.equal(r?.type, "block");
+  it("default: write to unlisted path requires approval", () => {
+    const r = checkPolicy(FULL_POLICY, "main", "write", { path: "/tmp/output.txt" });
+    assert.equal(r?.type, "require_approval");
   });
 
   // ── agent fallback ────────────────────────────────────────────────────────
 
   it("unknown agent falls back to default agent rules", () => {
     const r = checkPolicy(FULL_POLICY, "zuko", "exec", { command: "ls -la" });
-    assert.equal(r, null); // default agent has ls in always_allow
-  });
-
-  // ── non-exec/read/write tools ─────────────────────────────────────────────
-
-  it("web_fetch skips to default", () => {
-    const r = checkPolicy(FULL_POLICY, "main", "web_fetch", { url: "https://example.com" });
-    assert.equal(r?.type, "require_approval"); // default is require_approval
+    assert.equal(r, null); // default agent has no require_approval commands, ls auto-allows
   });
 
 });

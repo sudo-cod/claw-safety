@@ -263,18 +263,23 @@ function configToPolicies(config) {
   if (!config || !config.agents) return {};
   const result = {};
   for (const [id, ag] of Object.entries(config.agents)) {
-    const paths = {};
-    for (const [tool, constraints] of Object.entries(ag.path_constraints || {})) {
-      paths[tool] = {
-        allowed: constraints.allowed_paths || [],
-        blocked: constraints.blocked_paths || [],
-      };
-    }
     result[id] = {
-      name:  id,
-      mode:  ag.injection_mode || 'warn',
-      tools: ag.allowed_tools || [],
-      paths,
+      name:             id,
+      always_allow:     {
+        commands:    (ag.always_allow?.commands    || []).slice(),
+        read_paths:  (ag.always_allow?.read_paths  || []).slice(),
+        write_paths: (ag.always_allow?.write_paths || []).slice(),
+      },
+      require_approval: {
+        commands:    (ag.require_approval?.commands    || []).slice(),
+        read_paths:  (ag.require_approval?.read_paths  || []).slice(),
+        write_paths: (ag.require_approval?.write_paths || []).slice(),
+      },
+      always_block:     {
+        commands:    (ag.always_block?.commands    || []).slice(),
+        read_paths:  (ag.always_block?.read_paths  || []).slice(),
+        write_paths: (ag.always_block?.write_paths || []).slice(),
+      },
     };
   }
   return result;
@@ -591,55 +596,134 @@ function Dashboard({ filter, setFilter, selectedAgent, setSelectedAgent, tweaks 
   );
 }
 
-/* ─── YAML BUILDER ─── */
+/* ─── YAML BUILDER (v2) ─── */
 function buildYaml(policy) {
   if (!policy) return '';
   const lines = [];
-  lines.push(`agent: ${policy.name}`);
-  lines.push(`injection_mode: ${policy.mode}`);
-  lines.push(`allowed_tools:`);
-  if (policy.tools.length === 0) {
-    lines.push(`  []`);
-  } else {
-    policy.tools.forEach(t => lines.push(`  - ${t}`));
+
+  for (const { key, hasReadPaths } of [
+    { key: 'always_allow',    hasReadPaths: true  },
+    { key: 'require_approval', hasReadPaths: true  },
+    { key: 'always_block',    hasReadPaths: true   },
+  ]) {
+    const t = policy[key] || {};
+    lines.push(`${key}:`);
+    const cmds = t.commands || [];
+    if (cmds.length) { lines.push('  commands:'); cmds.forEach(c => lines.push(`    - ${c}`)); }
+    else lines.push('  commands: []');
+    if (hasReadPaths) {
+      const rp = t.read_paths || [];
+      if (rp.length) { lines.push('  read_paths:'); rp.forEach(p => lines.push(`    - ${p}`)); }
+      else lines.push('  read_paths: []');
+    }
+    const wp = t.write_paths || [];
+    if (wp.length) { lines.push('  write_paths:'); wp.forEach(p => lines.push(`    - ${p}`)); }
+    else lines.push('  write_paths: []');
+    lines.push('');
   }
-  lines.push(`path_constraints:`);
-  const toolsWithPaths = Object.keys(policy.paths || {});
-  if (toolsWithPaths.length === 0) {
-    lines.push(`  {}`);
-  } else {
-    toolsWithPaths.forEach(tool => {
-      const p = policy.paths[tool];
-      lines.push(`  ${tool}:`);
-      if (p.allowed && p.allowed.length > 0) {
-        lines.push(`    allowed:`);
-        p.allowed.forEach(a => lines.push(`      - "${a}"`));
-      }
-      if (p.blocked && p.blocked.length > 0) {
-        lines.push(`    blocked:`);
-        p.blocked.forEach(b => lines.push(`      - "${b}"`));
-      }
-    });
-  }
-  return lines.join('\n');
+  return lines.join('\n').trimEnd();
 }
 
 /* ─── POLICY EDITOR ─── */
+
+const TIER_META = {
+  always_allow:    { label:'Always allow',     color:'var(--teal)',  bg:'var(--teal-10)',  dot:'green', hasReadPaths: true  },
+  require_approval:{ label:'Require approval', color:'var(--amber)', bg:'var(--amber-10)', dot:'amber', hasReadPaths: true  },
+  always_block:    { label:'Always block',     color:'var(--red)',   bg:'var(--red-10)',   dot:'red',   hasReadPaths: true  },
+};
+
+function TagList({ items, onRemove, color }) {
+  return (
+    <div style={{display:'flex',flexWrap:'wrap',gap:4,minHeight:24}}>
+      {items.map(v => (
+        <span key={v} style={{
+          display:'inline-flex', alignItems:'center', gap:3,
+          padding:'2px 7px', borderRadius:5,
+          border:`0.5px solid ${color}`, background:'var(--bg)',
+          fontFamily:'var(--font-mono)', fontSize:10, color:'var(--text-primary)',
+        }}>
+          {v}
+          <button onClick={()=>onRemove(v)} style={{
+            border:'none', background:'none', cursor:'pointer',
+            color:'var(--text-tertiary)', fontSize:11, lineHeight:1, padding:'0 0 0 2px',
+          }}>×</button>
+        </span>
+      ))}
+    </div>
+  );
+}
+
+function AddInput({ placeholder, onAdd, color }) {
+  const [val, setVal] = useState('');
+  const commit = () => { const v = val.trim(); if (v) { onAdd(v); setVal(''); } };
+  return (
+    <div style={{display:'flex',gap:4,marginTop:6}}>
+      <input value={val} onChange={e=>setVal(e.target.value)}
+        onKeyDown={e=>e.key==='Enter'&&commit()}
+        placeholder={placeholder}
+        style={{
+          flex:1, padding:'3px 8px', borderRadius:5,
+          border:`0.5px solid var(--border-strong)`, background:'var(--bg-secondary)',
+          color:'var(--text-primary)', fontFamily:'var(--font-mono)', fontSize:10, outline:'none', minWidth:0,
+        }} />
+      <button onClick={commit} style={{
+        padding:'3px 10px', borderRadius:5, border:`0.5px solid ${color}`,
+        background:'transparent', color, fontSize:11, cursor:'pointer', fontWeight:600,
+      }}>+</button>
+    </div>
+  );
+}
+
+function TierSection({ tierKey, tier, onAdd, onRemove }) {
+  const meta = TIER_META[tierKey];
+  return (
+    <div style={{
+      border:`0.5px solid ${meta.color}`, borderRadius:'var(--radius-md)',
+      marginBottom:12, overflow:'hidden',
+    }}>
+      <div style={{
+        padding:'7px 12px', background:meta.bg,
+        borderBottom:`0.5px solid ${meta.color}`,
+        display:'flex', alignItems:'center', gap:6,
+      }}>
+        <Dot color={meta.dot} />
+        <span style={{fontWeight:600, fontSize:11, color:meta.color, letterSpacing:'0.04em'}}>{meta.label}</span>
+      </div>
+      <div style={{padding:'10px 12px', display:'flex', flexDirection:'column', gap:10}}>
+        <div>
+          <div style={{fontSize:9,fontWeight:600,letterSpacing:'0.08em',textTransform:'uppercase',color:'var(--text-tertiary)',marginBottom:4}}>Commands</div>
+          <TagList items={tier.commands||[]} onRemove={v=>onRemove(tierKey,'commands',v)} color={meta.color} />
+          <AddInput placeholder="e.g. git status" onAdd={v=>onAdd(tierKey,'commands',v)} color={meta.color} />
+        </div>
+        {meta.hasReadPaths && (
+          <div>
+            <div style={{fontSize:9,fontWeight:600,letterSpacing:'0.08em',textTransform:'uppercase',color:'var(--text-tertiary)',marginBottom:4}}>Read paths</div>
+            <TagList items={tier.read_paths||[]} onRemove={v=>onRemove(tierKey,'read_paths',v)} color={meta.color} />
+            <AddInput placeholder="e.g. /tmp/" onAdd={v=>onAdd(tierKey,'read_paths',v)} color={meta.color} />
+          </div>
+        )}
+        <div>
+          <div style={{fontSize:9,fontWeight:600,letterSpacing:'0.08em',textTransform:'uppercase',color:'var(--text-tertiary)',marginBottom:4}}>Write paths</div>
+          <TagList items={tier.write_paths||[]} onRemove={v=>onRemove(tierKey,'write_paths',v)} color={meta.color} />
+          <AddInput placeholder="e.g. ~/Documents/" onAdd={v=>onAdd(tierKey,'write_paths',v)} color={meta.color} />
+        </div>
+      </div>
+    </div>
+  );
+}
+
 function PolicyEditor({ initialPolicies = {} }) {
   const [agents, setAgents] = useState(() => JSON.parse(JSON.stringify(initialPolicies)));
   const firstId = Object.keys(initialPolicies)[0] || null;
   const [selectedId, setSelectedId] = useState(firstId);
+  const [saveState, setSaveState] = useState('idle');
+  const [deleteConfirm, setDeleteConfirm] = useState(false);
 
-  // Re-seed when live config arrives after initial render
   useEffect(() => {
     if (Object.keys(initialPolicies).length === 0) return;
     setAgents(JSON.parse(JSON.stringify(initialPolicies)));
     setSelectedId(prev => prev && initialPolicies[prev] ? prev : Object.keys(initialPolicies)[0] || null);
   }, [JSON.stringify(initialPolicies)]);
-  const [newToolInput, setNewToolInput] = useState('');
-  const [saveState, setSaveState] = useState('idle'); // idle, saving, saved
-  const [pathInputs, setPathInputs] = useState({}); // {tool_col: value}
-  const [deleteConfirm, setDeleteConfirm] = useState(false);
 
   const policy = agents[selectedId];
 
@@ -649,62 +733,54 @@ function PolicyEditor({ initialPolicies = {} }) {
     return next;
   });
 
-  const handleSave = () => {
+  const handleAdd = (tier, field, val) => {
+    update(p => {
+      if (!p[tier]) p[tier] = { commands:[], read_paths:[], write_paths:[] };
+      if (!p[tier][field]) p[tier][field] = [];
+      if (!p[tier][field].includes(val)) p[tier][field].push(val);
+    });
+  };
+
+  const handleRemove = (tier, field, val) => {
+    update(p => { p[tier][field] = p[tier][field].filter(v => v !== val); });
+  };
+
+  const handleSave = async () => {
     setSaveState('saving');
-    setTimeout(() => setSaveState('saved'), 900);
+    try {
+      const agentsPayload = {};
+      for (const [id, ag] of Object.entries(agents)) {
+        agentsPayload[id] = {
+          always_allow:     ag.always_allow,
+          require_approval: ag.require_approval,
+          always_block:     ag.always_block,
+        };
+      }
+      await fetch('/api/config', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ version: 2, agents: agentsPayload }),
+      });
+      setSaveState('saved');
+    } catch { setSaveState('idle'); }
     setTimeout(() => setSaveState('idle'), 2500);
   };
 
   const handleDelete = () => {
     if (!deleteConfirm) { setDeleteConfirm(true); return; }
-    setAgents(prev => {
-      const next = {...prev};
-      delete next[selectedId];
-      return next;
-    });
-    const remaining = Object.keys(agents).filter(k=>k!==selectedId);
-    setSelectedId(remaining[0] || null);
+    setAgents(prev => { const next={...prev}; delete next[selectedId]; return next; });
+    setSelectedId(Object.keys(agents).filter(k=>k!==selectedId)[0] || null);
     setDeleteConfirm(false);
-  };
-
-  const handleAddTool = () => {
-    const t = newToolInput.trim();
-    if (!t || policy.tools.includes(t)) return;
-    update(p => { p.tools.push(t); });
-    setNewToolInput('');
-  };
-
-  const handleRemoveTool = (tool) => {
-    update(p => {
-      p.tools = p.tools.filter(t => t !== tool);
-      delete p.paths[tool];
-    });
-  };
-
-  const handleAddPath = (tool, col) => {
-    const key = `${tool}_${col}`;
-    const val = (pathInputs[key] || '').trim();
-    if (!val) return;
-    update(p => {
-      if (!p.paths[tool]) p.paths[tool] = { allowed:[], blocked:[] };
-      if (!p.paths[tool][col]) p.paths[tool][col] = [];
-      if (!p.paths[tool][col].includes(val)) p.paths[tool][col].push(val);
-    });
-    setPathInputs(prev => ({...prev, [key]: ''}));
-  };
-
-  const handleRemovePath = (tool, col, val) => {
-    update(p => {
-      p.paths[tool][col] = p.paths[tool][col].filter(v => v !== val);
-    });
   };
 
   const handleAddAgent = () => {
     const id = `agent-new-${Date.now()}`;
-    setAgents(prev => ({
-      ...prev,
-      [id]: { name: 'new-agent', mode: 'warn', tools: [], paths: {} }
-    }));
+    setAgents(prev => ({...prev, [id]: {
+      name:             'new-agent',
+      always_allow:     { commands:[], read_paths:[], write_paths:[] },
+      require_approval: { commands:[], write_paths:[] },
+      always_block:     { commands:[], write_paths:[] },
+    }}));
     setSelectedId(id);
   };
 
@@ -728,13 +804,12 @@ function PolicyEditor({ initialPolicies = {} }) {
               background: selectedId===id ? 'var(--bg-secondary)' : 'transparent',
               marginBottom:2, textAlign:'left',
             }}>
-              <Dot color={ag.mode==='block'?'green':ag.mode==='warn'?'amber':'green'} />
+              <Dot color="teal" />
               <span style={{
                 flex:1, fontFamily:'var(--font-mono)', fontSize:11,
                 color: selectedId===id ? 'var(--text-primary)' : 'var(--text-secondary)',
                 overflow:'hidden', textOverflow:'ellipsis', whiteSpace:'nowrap',
-              }}>{ag.name}</span>
-              <ModeBadge mode={ag.mode} small />
+              }}>{ag.name || id}</span>
             </button>
           ))}
         </div>
@@ -749,23 +824,23 @@ function PolicyEditor({ initialPolicies = {} }) {
 
       {/* Editor */}
       {policy ? (
-        <div style={{flex:1,overflow:'auto',display:'flex',gap:0}}>
+        <div style={{flex:1,overflow:'hidden',display:'flex'}}>
           {/* Form */}
           <div style={{flex:1,overflow:'auto',padding:'20px',minWidth:0}}>
             {/* Header */}
             <div style={{display:'flex',alignItems:'flex-start',justifyContent:'space-between',marginBottom:20}}>
               <div>
-                <input value={policy.name} onChange={e=>update(p=>{p.name=e.target.value;})}
+                <input value={policy.name || selectedId}
+                  onChange={e=>update(p=>{p.name=e.target.value;})}
                   style={{
                     fontSize:20, fontWeight:600, border:'none', background:'transparent',
                     color:'var(--text-primary)', fontFamily:'var(--font-ui)', outline:'none',
-                    borderBottom:'0.5px solid transparent', padding:'2px 0',
-                    width: Math.max(policy.name.length*12, 120),
+                    borderBottom:'0.5px solid transparent', padding:'2px 0', width:200,
                   }}
                   onFocus={e=>e.target.style.borderBottomColor='var(--teal)'}
                   onBlur={e=>e.target.style.borderBottomColor='transparent'}
                 />
-                <div style={{fontSize:11,color:'var(--text-tertiary)',marginTop:2}}>Agent configuration</div>
+                <div style={{fontSize:11,color:'var(--text-tertiary)',marginTop:2}}>Agent configuration — v2</div>
               </div>
               <div style={{display:'flex',gap:6}}>
                 <button onClick={handleDelete} style={{
@@ -775,136 +850,26 @@ function PolicyEditor({ initialPolicies = {} }) {
                   fontFamily:'var(--font-ui)', fontSize:12, cursor:'pointer',
                 }}>{deleteConfirm ? 'Confirm delete' : 'Delete'}</button>
                 <button onClick={handleSave} style={{
-                  padding:'6px 16px', border:'none',
-                  borderRadius:'var(--radius-sm)',
-                  background: saveState==='saved' ? 'var(--teal)' : saveState==='saving' ? 'var(--teal)' : 'var(--teal)',
-                  color:'white', fontFamily:'var(--font-ui)', fontSize:12, fontWeight:600, cursor:'pointer',
-                  opacity: saveState==='saving' ? 0.7 : 1,
-                  transition:'opacity 0.15s',
+                  padding:'6px 16px', border:'none', borderRadius:'var(--radius-sm)',
+                  background:'var(--teal)', color:'white',
+                  fontFamily:'var(--font-ui)', fontSize:12, fontWeight:600, cursor:'pointer',
+                  opacity: saveState==='saving' ? 0.7 : 1, transition:'opacity 0.15s',
                 }}>
                   {saveState==='saving' ? 'Saving…' : saveState==='saved' ? '✓ Saved' : 'Save to disk'}
                 </button>
               </div>
             </div>
 
-            {/* Injection mode */}
-            <Section label="Injection mode">
-              <div style={{display:'flex',gap:6}}>
-                {['warn','sanitize','block'].map(m => {
-                  const cfg = MODE_CONFIG[m];
-                  const active = policy.mode === m;
-                  return (
-                    <button key={m} onClick={()=>update(p=>{p.mode=m;})} style={{
-                      padding:'6px 16px', borderRadius:20, border:`0.5px solid ${active ? cfg.color : 'var(--border-strong)'}`,
-                      background: active ? cfg.bg : 'transparent',
-                      color: active ? cfg.color : 'var(--text-secondary)',
-                      fontFamily:'var(--font-mono)', fontSize:11, fontWeight: active ? 600 : 400,
-                      cursor:'pointer', transition:'all 0.15s',
-                    }}>{m}</button>
-                  );
-                })}
-              </div>
-            </Section>
-
-            {/* Allowed tools */}
-            <Section label="Allowed tools">
-              <div style={{display:'flex',flexWrap:'wrap',gap:6,marginBottom:8}}>
-                {policy.tools.map(t => (
-                  <span key={t} style={{
-                    display:'inline-flex', alignItems:'center', gap:4,
-                    padding:'3px 8px', borderRadius:'var(--radius-sm)',
-                    border:'0.5px solid var(--border-strong)', background:'var(--bg-secondary)',
-                    fontFamily:'var(--font-mono)', fontSize:11, color:'var(--text-primary)',
-                  }}>
-                    {t}
-                    <button onClick={()=>handleRemoveTool(t)} style={{
-                      border:'none', background:'none', cursor:'pointer',
-                      color:'var(--text-tertiary)', fontSize:12, lineHeight:1, padding:'0 0 0 2px',
-                    }}>×</button>
-                  </span>
-                ))}
-              </div>
-              <div style={{display:'flex',gap:6}}>
-                <input value={newToolInput} onChange={e=>setNewToolInput(e.target.value)}
-                  onKeyDown={e=>e.key==='Enter'&&handleAddTool()}
-                  placeholder="tool_name…"
-                  style={{
-                    flex:1, padding:'5px 10px', borderRadius:'var(--radius-sm)',
-                    border:'0.5px solid var(--border-strong)', background:'var(--bg-secondary)',
-                    color:'var(--text-primary)', fontFamily:'var(--font-mono)', fontSize:11, outline:'none',
-                  }} />
-                <button onClick={handleAddTool} style={{
-                  padding:'5px 12px', borderRadius:'var(--radius-sm)',
-                  border:'0.5px solid var(--border-strong)', background:'var(--bg-secondary)',
-                  color:'var(--text-secondary)', fontFamily:'var(--font-ui)', fontSize:12, cursor:'pointer',
-                }}>Add</button>
-              </div>
-            </Section>
-
-            {/* Path constraints */}
-            <Section label="Path constraints">
-              {policy.tools.map(tool => (
-                <div key={tool} style={{
-                  border:'0.5px solid var(--border)', borderRadius:'var(--radius-sm)',
-                  marginBottom:8, overflow:'hidden',
-                }}>
-                  <div style={{
-                    padding:'6px 10px', background:'var(--bg-secondary)',
-                    borderBottom:'0.5px solid var(--border)',
-                    fontFamily:'var(--font-mono)', fontSize:11, fontWeight:500,
-                  }}>{tool}</div>
-                  <div style={{display:'grid',gridTemplateColumns:'1fr 1fr',gap:0}}>
-                    {['allowed','blocked'].map((col,ci) => {
-                      const entries = policy.paths?.[tool]?.[col] || [];
-                      const pathKey = `${tool}_${col}`;
-                      return (
-                        <div key={col} style={{
-                          padding:'8px 10px',
-                          borderRight: ci===0 ? '0.5px solid var(--border)' : 'none',
-                        }}>
-                          <div style={{
-                            fontSize:9, fontWeight:600, letterSpacing:'0.08em',
-                            textTransform:'uppercase', marginBottom:6,
-                            color: col==='allowed' ? 'var(--teal)' : 'var(--red)',
-                          }}>{col}</div>
-                          {entries.map(v => (
-                            <div key={v} style={{
-                              display:'flex', alignItems:'center', gap:4,
-                              marginBottom:3,
-                            }}>
-                              <span style={{fontFamily:'var(--font-mono)',fontSize:10,flex:1,color:'var(--text-secondary)'}}>{v}</span>
-                              <button onClick={()=>handleRemovePath(tool,col,v)} style={{
-                                border:'none',background:'none',cursor:'pointer',
-                                color:'var(--text-tertiary)',fontSize:11,padding:0,lineHeight:1,
-                              }}>×</button>
-                            </div>
-                          ))}
-                          <div style={{display:'flex',gap:4,marginTop:4}}>
-                            <input value={pathInputs[pathKey]||''} placeholder="add path…"
-                              onChange={e=>setPathInputs(prev=>({...prev,[pathKey]:e.target.value}))}
-                              onKeyDown={e=>e.key==='Enter'&&handleAddPath(tool,col)}
-                              style={{
-                                flex:1, padding:'3px 6px', borderRadius:5,
-                                border:'0.5px solid var(--border-strong)', background:'var(--bg)',
-                                color:'var(--text-primary)', fontFamily:'var(--font-mono)', fontSize:10, outline:'none',
-                                minWidth:0,
-                              }} />
-                            <button onClick={()=>handleAddPath(tool,col)} style={{
-                              padding:'3px 8px', borderRadius:5,
-                              border:'0.5px solid var(--border-strong)', background:'transparent',
-                              color:'var(--text-tertiary)', fontSize:10, cursor:'pointer',
-                            }}>+</button>
-                          </div>
-                        </div>
-                      );
-                    })}
-                  </div>
-                </div>
-              ))}
-              {policy.tools.length===0 && (
-                <div style={{fontSize:11,color:'var(--text-tertiary)',fontStyle:'italic'}}>Add tools above to configure path constraints</div>
-              )}
-            </Section>
+            {/* Two tiers */}
+            {Object.keys(TIER_META).map(tierKey => (
+              <TierSection
+                key={tierKey}
+                tierKey={tierKey}
+                tier={policy[tierKey] || {}}
+                onAdd={handleAdd}
+                onRemove={handleRemove}
+              />
+            ))}
           </div>
 
           {/* YAML preview */}
