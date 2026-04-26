@@ -1,5 +1,5 @@
 # Claw Safety Shield
-<img width="513" height="513" alt="Screenshot 2026-04-26 at 14 54 46" src="https://github.com/user-attachments/assets/11396e61-1253-4dbc-bc48-0d1395e62646" />
+<img width="513" height="513" alt="583844105-11396e61-1253-4dbc-bc48-0d1395e62646" src="https://github.com/user-attachments/assets/520e2ac0-7bbf-43f4-b6c1-f76b9c84f155" />
 Security middleware plugin for OpenClaw agents. Intercepts every tool call before and after execution.
 
 Watch the demo: https://www.youtube.com/watch?v=34f8QWKOei0
