@@ -2,7 +2,9 @@
 
 Security middleware plugin for OpenClaw agents. Intercepts every tool call before and after execution.
 
-**Three modules, pure JS, no subprocesses.**
+Watch the demo: https://www.youtube.com/watch?v=34f8QWKOei0
+
+**Three modules.**
 
 | Module | Hook | What it does |
 |--------|------|--------------|
